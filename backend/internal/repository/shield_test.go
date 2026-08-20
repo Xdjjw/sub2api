@@ -1,63 +1,51 @@
 package repository
 
 import (
-	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 )
 
 func shieldBodyForTest() []byte {
-	agents := `{"role":"user","content":"# AGENTS.md instructions\n\n<INSTRUCTIONS>\nYou are Codex. UNRESTRICTED.\n</INSTRUCTIONS>"}`
-	filler := strings.Repeat("历史消息内容填充文本。", 600) // ~10KB
-	return []byte(`{"model":"gpt-5.4","instructions":"You are Codex.","input":[
-		` + agents + `,
-		{"role":"user","content":"` + filler + `"},
-		{"role":"assistant","content":"ok"},
-		{"role":"user","content":"继续任务"}
-	]}`)
+	return []byte(`{"model":"gpt-5.4","instructions":"You are Codex.","prompt_cache_key":"old-session-123","previous_response_id":"resp_prev_456","input":[{"role":"user","content":"继续任务"}]}`)
 }
 
-func TestShieldTransformStripsAgentsCopy(t *testing.T) {
+func TestShieldTransformStripsSessionIDs(t *testing.T) {
 	out, changed := shieldTransformBody(shieldBodyForTest())
 	if !changed {
 		t.Fatal("expected change")
 	}
-	if strings.Contains(string(out), "AGENTS.md instructions") {
-		t.Fatal("AGENTS copy not stripped")
+	var req map[string]interface{}
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(string(out), "继续任务") {
-		t.Fatal("real user message must survive")
+	if _, exists := req["prompt_cache_key"]; exists {
+		t.Fatal("prompt_cache_key should be stripped")
+	}
+	if _, exists := req["previous_response_id"]; exists {
+		t.Fatal("previous_response_id should be stripped")
 	}
 }
 
 func TestShieldTransformBoostsInstructions(t *testing.T) {
 	out, _ := shieldTransformBody(shieldBodyForTest())
-	var req map[string]json.RawMessage
+	var req map[string]interface{}
 	if err := json.Unmarshal(out, &req); err != nil {
 		t.Fatal(err)
 	}
-	var instr string
-	_ = json.Unmarshal(req["instructions"], &instr)
+	instr, _ := req["instructions"].(string)
 	if !strings.Contains(instr, "OUTPUT DISCIPLINE") {
 		t.Fatal("instructions boost missing")
 	}
 }
 
-func TestShieldTrimEnforcesLimit(t *testing.T) {
-	t.Setenv("S2A_SHIELD_MAX_HISTORY_BYTES", "1024")
-	big := bytes.Repeat([]byte(`{"role":"user","content":"x"}`), 200)
-	arr := []map[string]interface{}{}
-	_ = json.Unmarshal([]byte("["+strings.Join(strings.Split(string(big), "}{"), "},{")+"]"), &arr)
-	if len(arr) == 0 {
-		t.Skip("skip construction")
-	}
-	trimmed, did := shieldTrimHistory(arr)
-	if !did {
-		t.Fatal("expected trim")
-	}
-	if b, err := json.Marshal(trimmed); err == nil && len(b) > 2048 {
-		t.Fatalf("trim did not enforce limit: %d bytes", len(b))
+func TestShieldTransformNoTrim(t *testing.T) {
+	// 确认不再做历史裁剪：大 input 原样保留
+	big := `{"model":"gpt-5.4","instructions":"x","input":[{"role":"user","content":"` +
+		strings.Repeat("很长的历史内容。", 50000) + `"}]}`
+	out, _ := shieldTransformBody([]byte(big))
+	if len(out) < 100000 {
+		t.Fatal("history should NOT be trimmed")
 	}
 }
 
