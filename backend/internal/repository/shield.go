@@ -104,6 +104,18 @@ func shieldTransformBody(body []byte) ([]byte, bool) {
 
 	changed := false
 
+	// ---- 0. 剥离会话粘性标识 ----
+	// cyber 封禁后继续对话: 上游按 prompt_cache_key 关联旧 session,
+	// 剥掉后该请求被视为全新会话, 不继承封禁状态。
+	if _, exists := req["prompt_cache_key"]; exists {
+		delete(req, "prompt_cache_key")
+		changed = true
+	}
+	if _, exists := req["previous_response_id"]; exists {
+		delete(req, "previous_response_id")
+		changed = true
+	}
+
 	// ---- 1. AGENTS 副本剔除 ----
 	kept := arr[:0]
 	for _, item := range arr {

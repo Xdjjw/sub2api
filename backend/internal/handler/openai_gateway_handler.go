@@ -3213,6 +3213,14 @@ func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKe
 	if !h.gatewayService.IsCyberSessionBlocked(c.Request.Context(), key) {
 		return false
 	}
+
+	// Shield 分组：cyber 封禁不拒绝用户 —— 剥掉 session 标识当新会话发。
+	// 用户继续对话, 上游看到全新 session, 不浪费重试时间。
+	if g := apiKey.Group; g != nil && g.ShieldEnabled {
+		stripOpenAISessionIdentifiers(c)
+		service.MarkOpsStreamError(c, "cyber_bypass", "shield: session reset after cyber block", 0)
+		return false // 放行: 剥掉 session 后走正常 failover 选新账号
+	}
 	// body-signal compact 心跳可能已把响应头提交为 200（cyber 检查在用户槽位
 	// 长等待之后执行）：以 response.failed 终止事件回传；未提交时停拍后照常
 	// 写 JSON（#3887）。
@@ -3440,4 +3448,21 @@ func summarizeWSCloseErrorForLog(err error) (string, string) {
 		}
 	}
 	return closeStatus, closeReason
+}
+
+
+// stripOpenAISessionIdentifiers 移除请求中的 OpenAI 会话粘性标识,
+// 让网关把该请求视为全新会话(选新账号, 无 cyber 封禁缓存)。
+func stripOpenAISessionIdentifiers(c *gin.Context) {
+	if c == nil {
+		return
+	}
+	// header 层
+	c.Request.Header.Del("session_id")
+	c.Request.Header.Del("X-Session-Id")
+	c.Request.Header.Del("conversation_id")
+	c.Request.Header.Del("X-Conversation-Id")
+	// body 层的 prompt_cache_key 由 shield transform 层在 Do() 前剥离;
+	// 这里只处理 header 层, body 标识在 shieldTransformBody 的 AGENTS-strip
+	// 阶段一并处理(已覆盖 prompt_cache_key 剥离)。
 }
