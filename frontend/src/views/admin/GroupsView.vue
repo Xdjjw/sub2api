@@ -269,6 +269,12 @@
             </span>
           </template>
 
+      <template #cell-shield_enabled="{ value }">
+        <span :class="['badge', value ? 'badge-primary' : 'badge-gray']">
+          {{ value ? t("admin.groups.shield.badge") : "—" }}
+        </span>
+      </template>
+
           <template #cell-account_count="{ row }">
             <div class="space-y-0.5 text-xs">
               <div>
@@ -1205,6 +1211,26 @@
               />
             </div>
           </div>
+        </div>
+
+
+        <!-- 破限 Shield 开关 -->
+        <div class="border-t pt-4">
+          <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              v-model="createForm.shield_enabled"
+              type="checkbox"
+              class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span>{{ t("admin.groups.shield.enable") }}</span>
+          </label>
+          <p class="mb-3 mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            {{
+              createForm.shield_enabled
+                ? t("admin.groups.shield.enabledHint")
+                : t("admin.groups.shield.disabledHint")
+            }}
+          </p>
         </div>
 
         <!-- 分组利润控制（五个平台 token 请求） -->
@@ -2933,6 +2959,26 @@
           </div>
         </div>
 
+
+        <!-- 破限 Shield 开关 -->
+        <div class="border-t pt-4">
+          <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+            <input
+              v-model="editForm.shield_enabled"
+              type="checkbox"
+              class="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+            />
+            <span>{{ t("admin.groups.shield.enable") }}</span>
+          </label>
+          <p class="mb-3 mt-1.5 text-xs text-gray-500 dark:text-gray-400">
+            {{
+              editForm.shield_enabled
+                ? t("admin.groups.shield.enabledHint")
+                : t("admin.groups.shield.disabledHint")
+            }}
+          </p>
+        </div>
+
         <!-- 分组利润控制（五个平台 token 请求） -->
         <div v-if="isProfitControlPlatform(editForm.platform)" class="border-t pt-4">
           <label class="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
@@ -4605,6 +4651,11 @@ const allColumns = computed<Column[]>(() => [
     sortable: true,
   },
   {
+    key: "shield_enabled",
+    label: t("admin.groups.columns.shield"),
+    sortable: true,
+  },
+  {
     key: "account_count",
     label: t("admin.groups.columns.accounts"),
     sortable: true,
@@ -5066,6 +5117,7 @@ const createForm = reactive({
   peak_rate_multiplier: 1.0,
   // 分组利润控制（五个 token 平台）；界面按百分比输入，提交时转小数
   profit_control_enabled: false,
+  shield_enabled: false,
   profit_min_margin_percent: 0,
   profit_safety_buffer_percent: 0,
   // Claude Code 客户端限制（仅 anthropic 平台使用）
@@ -5427,6 +5479,7 @@ const editForm = reactive({
   peak_rate_multiplier: 1.0,
   // 分组利润控制（五个 token 平台）；界面按百分比输入，提交时转小数
   profit_control_enabled: false,
+  shield_enabled: false,
   profit_min_margin_percent: 0,
   profit_safety_buffer_percent: 0,
   // Claude Code 客户端限制（仅 anthropic 平台使用）
@@ -5881,6 +5934,7 @@ const closeCreateModal = () => {
   createForm.peak_end = "";
   createForm.peak_rate_multiplier = 1.0;
   createForm.profit_control_enabled = false;
+  createForm.shield_enabled = false;
   createForm.profit_min_margin_percent = 0;
   createForm.profit_safety_buffer_percent = 0;
   createForm.claude_code_only = false;
@@ -6008,6 +6062,7 @@ const handleCreateGroup = async () => {
         createForm.reasoning_effort_mappings,
       ),
       // 利润控制：界面百分比转小数提交；仅五个 token 平台可启用
+      shield_enabled: createForm.shield_enabled,
       profit_control_enabled:
         isProfitControlPlatform(createForm.platform) &&
         createForm.profit_control_enabled,
@@ -6128,6 +6183,7 @@ const handleEdit = async (group: AdminGroup) => {
   editForm.peak_end = group.peak_end ?? "";
   editForm.peak_rate_multiplier = group.peak_rate_multiplier ?? 1.0;
   editForm.profit_control_enabled = group.profit_control_enabled ?? false;
+  editForm.shield_enabled = group.shield_enabled ?? false;
   editForm.profit_min_margin_percent = decimalToPercent(
     group.profit_min_margin ?? 0,
   );
@@ -6195,6 +6251,7 @@ const closeEditModal = () => {
   editForm.peak_end = "";
   editForm.peak_rate_multiplier = 1.0;
   editForm.profit_control_enabled = false;
+  editForm.shield_enabled = false;
   editForm.profit_min_margin_percent = 0;
   editForm.profit_safety_buffer_percent = 0;
   editForm.video_rate_independent = false;
@@ -6281,6 +6338,7 @@ const handleUpdateGroup = async () => {
         editForm.reasoning_effort_mappings,
       ),
       // 利润控制：界面百分比转小数提交；仅五个 token 平台可启用
+      shield_enabled: editForm.shield_enabled,
       profit_control_enabled:
         isProfitControlPlatform(editForm.platform) &&
         editForm.profit_control_enabled,

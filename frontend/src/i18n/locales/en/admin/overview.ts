@@ -141,6 +141,7 @@ export default {
         restoreFailed: 'Restore failed',
       },
       columns: {
+    shield: "Shield",
         status: 'Status',
         fileName: 'File Name',
         size: 'Size',
@@ -1036,7 +1037,13 @@ export default {
         peakMultiplier: 'Peak multiplier',
         multiplierHint: 'Applies to token billing multiplier; image tokens in token billing are also affected. 0 means peak token requests are billed at 0x.'
       },
-      profitControl: {
+      shield: {
+    enable: "Enable Shield (jailbreak)",
+    enabledHint: "All AI requests under this group get content transformation (AGENTS-strip + history trim + output discipline)",
+    disabledHint: "Requests forwarded as-is, no transformation",
+    badge: "Shield",
+  },
+  profitControl: {
         enable: 'Enable profit control',
         enabledHint: 'Scheduling only admits accounts whose account multiplier ≤ the request\'s effective downstream multiplier × (1 − min margin − safety buffer). Account multipliers may be maintained manually or synchronized from probes; existing ordering, stickiness and breakers keep working among qualified accounts. Image/video scheduling is not covered yet.',
         disabledHint: 'When disabled, scheduling does no profit filtering: accounts whose account multiplier exceeds the downstream multiplier can still be selected, which may produce loss-making requests.',
