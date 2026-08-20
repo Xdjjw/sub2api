@@ -1,0 +1,2 @@
+-- 229: 分组级破限(shield)开关
+ALTER TABLE groups ADD COLUMN IF NOT EXISTS shield_enabled BOOLEAN NOT NULL DEFAULT FALSE;

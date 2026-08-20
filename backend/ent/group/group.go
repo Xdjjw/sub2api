@@ -30,6 +30,8 @@ const (
 	FieldRateMultiplier = "rate_multiplier"
 	// FieldPeakRateEnabled holds the string denoting the peak_rate_enabled field in the database.
 	FieldPeakRateEnabled = "peak_rate_enabled"
+	// FieldShieldEnabled holds the string denoting the shield_enabled field in the database.
+	FieldShieldEnabled = "shield_enabled"
 	// FieldPeakStart holds the string denoting the peak_start field in the database.
 	FieldPeakStart = "peak_start"
 	// FieldPeakEnd holds the string denoting the peak_end field in the database.
@@ -222,6 +224,7 @@ var Columns = []string{
 	FieldDescription,
 	FieldRateMultiplier,
 	FieldPeakRateEnabled,
+	FieldShieldEnabled,
 	FieldPeakStart,
 	FieldPeakEnd,
 	FieldPeakRateMultiplier,
@@ -318,6 +321,8 @@ var (
 	DefaultRateMultiplier float64
 	// DefaultPeakRateEnabled holds the default value on creation for the "peak_rate_enabled" field.
 	DefaultPeakRateEnabled bool
+	// DefaultShieldEnabled holds the default value on creation for the "shield_enabled" field.
+	DefaultShieldEnabled bool
 	// DefaultPeakStart holds the default value on creation for the "peak_start" field.
 	DefaultPeakStart string
 	// PeakStartValidator is a validator for the "peak_start" field. It is called by the builders before save.
@@ -455,6 +460,11 @@ func ByRateMultiplier(opts ...sql.OrderTermOption) OrderOption {
 // ByPeakRateEnabled orders the results by the peak_rate_enabled field.
 func ByPeakRateEnabled(opts ...sql.OrderTermOption) OrderOption {
 	return sql.OrderByField(FieldPeakRateEnabled, opts...).ToFunc()
+}
+
+// ByShieldEnabled orders the results by the shield_enabled field.
+func ByShieldEnabled(opts ...sql.OrderTermOption) OrderOption {
+	return sql.OrderByField(FieldShieldEnabled, opts...).ToFunc()
 }
 
 // ByPeakStart orders the results by the peak_start field.

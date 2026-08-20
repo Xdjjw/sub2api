@@ -1078,6 +1078,9 @@ func (s *OpenAIGatewayService) buildUpstreamRequest(ctx context.Context, c *gin.
 		return nil, err
 	}
 	req = req.WithContext(WithHTTPUpstreamProfile(req.Context(), HTTPUpstreamProfileOpenAI))
+	if g := apiKeyGroup(getAPIKeyFromContext(c)); g != nil && g.ShieldEnabled {
+		req = req.WithContext(WithShieldEnabled(req.Context()))
+	}
 
 	// Build authentication for this request. Agent Identity signs a fresh
 	// assertion here; OAuth/PAT/API-key keep their existing Bearer behavior.

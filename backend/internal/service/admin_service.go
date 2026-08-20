@@ -234,6 +234,8 @@ type CreateGroupInput struct {
 	PeakStart          string
 	PeakEnd            string
 	PeakRateMultiplier *float64
+	// 破限(shield)开关
+	ShieldEnabled bool
 	ImagePrice1K       *float64
 	ImagePrice2K       *float64
 	ImagePrice4K       *float64
@@ -309,6 +311,8 @@ type UpdateGroupInput struct {
 	PeakStart          *string
 	PeakEnd            *string
 	PeakRateMultiplier *float64
+	// 破限(shield)开关（nil 表示不修改）
+	ShieldEnabled *bool
 	ImagePrice1K       *float64
 	ImagePrice2K       *float64
 	ImagePrice4K       *float64

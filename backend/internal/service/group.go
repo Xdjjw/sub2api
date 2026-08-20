@@ -27,6 +27,8 @@ type Group struct {
 	PeakStart          string
 	PeakEnd            string
 	PeakRateMultiplier float64
+	// ShieldEnabled: 分组级破限(shield)开关 —— 出站请求做 AGENTS 副本剔除/历史瘦身/纪律锚点注入
+	ShieldEnabled bool
 	IsExclusive        bool
 	Status             string
 	Hydrated           bool // indicates the group was loaded from a trusted repository source

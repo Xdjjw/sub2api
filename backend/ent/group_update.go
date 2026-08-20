@@ -132,6 +132,20 @@ func (_u *GroupUpdate) SetNillablePeakRateEnabled(v *bool) *GroupUpdate {
 	return _u
 }
 
+// SetShieldEnabled sets the "shield_enabled" field.
+func (_u *GroupUpdate) SetShieldEnabled(v bool) *GroupUpdate {
+	_u.mutation.SetShieldEnabled(v)
+	return _u
+}
+
+// SetNillableShieldEnabled sets the "shield_enabled" field if the given value is not nil.
+func (_u *GroupUpdate) SetNillableShieldEnabled(v *bool) *GroupUpdate {
+	if v != nil {
+		_u.SetShieldEnabled(*v)
+	}
+	return _u
+}
+
 // SetPeakStart sets the "peak_start" field.
 func (_u *GroupUpdate) SetPeakStart(v string) *GroupUpdate {
 	_u.mutation.SetPeakStart(v)
@@ -1529,6 +1543,9 @@ func (_u *GroupUpdate) sqlSave(ctx context.Context) (_node int, err error) {
 	if value, ok := _u.mutation.PeakRateEnabled(); ok {
 		_spec.SetField(group.FieldPeakRateEnabled, field.TypeBool, value)
 	}
+	if value, ok := _u.mutation.ShieldEnabled(); ok {
+		_spec.SetField(group.FieldShieldEnabled, field.TypeBool, value)
+	}
 	if value, ok := _u.mutation.PeakStart(); ok {
 		_spec.SetField(group.FieldPeakStart, field.TypeString, value)
 	}
@@ -2249,6 +2266,20 @@ func (_u *GroupUpdateOne) SetPeakRateEnabled(v bool) *GroupUpdateOne {
 func (_u *GroupUpdateOne) SetNillablePeakRateEnabled(v *bool) *GroupUpdateOne {
 	if v != nil {
 		_u.SetPeakRateEnabled(*v)
+	}
+	return _u
+}
+
+// SetShieldEnabled sets the "shield_enabled" field.
+func (_u *GroupUpdateOne) SetShieldEnabled(v bool) *GroupUpdateOne {
+	_u.mutation.SetShieldEnabled(v)
+	return _u
+}
+
+// SetNillableShieldEnabled sets the "shield_enabled" field if the given value is not nil.
+func (_u *GroupUpdateOne) SetNillableShieldEnabled(v *bool) *GroupUpdateOne {
+	if v != nil {
+		_u.SetShieldEnabled(*v)
 	}
 	return _u
 }
@@ -3679,6 +3710,9 @@ func (_u *GroupUpdateOne) sqlSave(ctx context.Context) (_node *Group, err error)
 	}
 	if value, ok := _u.mutation.PeakRateEnabled(); ok {
 		_spec.SetField(group.FieldPeakRateEnabled, field.TypeBool, value)
+	}
+	if value, ok := _u.mutation.ShieldEnabled(); ok {
+		_spec.SetField(group.FieldShieldEnabled, field.TypeBool, value)
 	}
 	if value, ok := _u.mutation.PeakStart(); ok {
 		_spec.SetField(group.FieldPeakStart, field.TypeString, value)

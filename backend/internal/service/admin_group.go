@@ -477,6 +477,7 @@ func (s *adminServiceImpl) CreateGroup(ctx context.Context, input *CreateGroupIn
 		PeakStart:                       peakStart,
 		PeakEnd:                         peakEnd,
 		PeakRateMultiplier:              peakRateMultiplier,
+		ShieldEnabled:                   input.ShieldEnabled,
 		ProfitControlEnabled:            profitControlEnabled,
 		ProfitMinMargin:                 profitMinMargin,
 		ProfitSafetyBuffer:              profitSafetyBuffer,
@@ -733,6 +734,9 @@ func (s *adminServiceImpl) UpdateGroup(ctx context.Context, id int64, input *Upd
 	}
 	if input.PeakRateEnabled != nil {
 		group.PeakRateEnabled = *input.PeakRateEnabled
+	}
+	if input.ShieldEnabled != nil {
+		group.ShieldEnabled = *input.ShieldEnabled
 	}
 	if input.PeakStart != nil {
 		group.PeakStart = *input.PeakStart

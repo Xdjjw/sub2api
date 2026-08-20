@@ -22089,6 +22089,7 @@ type GroupMutation struct {
 	rate_multiplier                         *float64
 	addrate_multiplier                      *float64
 	peak_rate_enabled                       *bool
+	shield_enabled                          *bool
 	peak_start                              *string
 	peak_end                                *string
 	peak_rate_multiplier                    *float64
@@ -22591,6 +22592,42 @@ func (m *GroupMutation) OldPeakRateEnabled(ctx context.Context) (v bool, err err
 // ResetPeakRateEnabled resets all changes to the "peak_rate_enabled" field.
 func (m *GroupMutation) ResetPeakRateEnabled() {
 	m.peak_rate_enabled = nil
+}
+
+// SetShieldEnabled sets the "shield_enabled" field.
+func (m *GroupMutation) SetShieldEnabled(b bool) {
+	m.shield_enabled = &b
+}
+
+// ShieldEnabled returns the value of the "shield_enabled" field in the mutation.
+func (m *GroupMutation) ShieldEnabled() (r bool, exists bool) {
+	v := m.shield_enabled
+	if v == nil {
+		return
+	}
+	return *v, true
+}
+
+// OldShieldEnabled returns the old "shield_enabled" field's value of the Group entity.
+// If the Group object wasn't provided to the builder, the object is fetched from the database.
+// An error is returned if the mutation operation is not UpdateOne, or the database query fails.
+func (m *GroupMutation) OldShieldEnabled(ctx context.Context) (v bool, err error) {
+	if !m.op.Is(OpUpdateOne) {
+		return v, errors.New("OldShieldEnabled is only allowed on UpdateOne operations")
+	}
+	if m.id == nil || m.oldValue == nil {
+		return v, errors.New("OldShieldEnabled requires an ID field in the mutation")
+	}
+	oldValue, err := m.oldValue(ctx)
+	if err != nil {
+		return v, fmt.Errorf("querying old value for OldShieldEnabled: %w", err)
+	}
+	return oldValue.ShieldEnabled, nil
+}
+
+// ResetShieldEnabled resets all changes to the "shield_enabled" field.
+func (m *GroupMutation) ResetShieldEnabled() {
+	m.shield_enabled = nil
 }
 
 // SetPeakStart sets the "peak_start" field.
@@ -25773,7 +25810,7 @@ func (m *GroupMutation) Type() string {
 // order to get all numeric fields that were incremented/decremented, call
 // AddedFields().
 func (m *GroupMutation) Fields() []string {
-	fields := make([]string, 0, 62)
+	fields := make([]string, 0, 63)
 	if m.created_at != nil {
 		fields = append(fields, group.FieldCreatedAt)
 	}
@@ -25794,6 +25831,9 @@ func (m *GroupMutation) Fields() []string {
 	}
 	if m.peak_rate_enabled != nil {
 		fields = append(fields, group.FieldPeakRateEnabled)
+	}
+	if m.shield_enabled != nil {
+		fields = append(fields, group.FieldShieldEnabled)
 	}
 	if m.peak_start != nil {
 		fields = append(fields, group.FieldPeakStart)
@@ -25982,6 +26022,8 @@ func (m *GroupMutation) Field(name string) (ent.Value, bool) {
 		return m.RateMultiplier()
 	case group.FieldPeakRateEnabled:
 		return m.PeakRateEnabled()
+	case group.FieldShieldEnabled:
+		return m.ShieldEnabled()
 	case group.FieldPeakStart:
 		return m.PeakStart()
 	case group.FieldPeakEnd:
@@ -26115,6 +26157,8 @@ func (m *GroupMutation) OldField(ctx context.Context, name string) (ent.Value, e
 		return m.OldRateMultiplier(ctx)
 	case group.FieldPeakRateEnabled:
 		return m.OldPeakRateEnabled(ctx)
+	case group.FieldShieldEnabled:
+		return m.OldShieldEnabled(ctx)
 	case group.FieldPeakStart:
 		return m.OldPeakStart(ctx)
 	case group.FieldPeakEnd:
@@ -26282,6 +26326,13 @@ func (m *GroupMutation) SetField(name string, value ent.Value) error {
 			return fmt.Errorf("unexpected type %T for field %s", value, name)
 		}
 		m.SetPeakRateEnabled(v)
+		return nil
+	case group.FieldShieldEnabled:
+		v, ok := value.(bool)
+		if !ok {
+			return fmt.Errorf("unexpected type %T for field %s", value, name)
+		}
+		m.SetShieldEnabled(v)
 		return nil
 	case group.FieldPeakStart:
 		v, ok := value.(string)
@@ -27199,6 +27250,9 @@ func (m *GroupMutation) ResetField(name string) error {
 		return nil
 	case group.FieldPeakRateEnabled:
 		m.ResetPeakRateEnabled()
+		return nil
+	case group.FieldShieldEnabled:
+		m.ResetShieldEnabled()
 		return nil
 	case group.FieldPeakStart:
 		m.ResetPeakStart()

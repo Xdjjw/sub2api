@@ -90,6 +90,11 @@ func PeakRateEnabled(v bool) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldPeakRateEnabled, v))
 }
 
+// ShieldEnabled applies equality check predicate on the "shield_enabled" field. It's identical to ShieldEnabledEQ.
+func ShieldEnabled(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldShieldEnabled, v))
+}
+
 // PeakStart applies equality check predicate on the "peak_start" field. It's identical to PeakStartEQ.
 func PeakStart(v string) predicate.Group {
 	return predicate.Group(sql.FieldEQ(FieldPeakStart, v))
@@ -648,6 +653,16 @@ func PeakRateEnabledEQ(v bool) predicate.Group {
 // PeakRateEnabledNEQ applies the NEQ predicate on the "peak_rate_enabled" field.
 func PeakRateEnabledNEQ(v bool) predicate.Group {
 	return predicate.Group(sql.FieldNEQ(FieldPeakRateEnabled, v))
+}
+
+// ShieldEnabledEQ applies the EQ predicate on the "shield_enabled" field.
+func ShieldEnabledEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldEQ(FieldShieldEnabled, v))
+}
+
+// ShieldEnabledNEQ applies the NEQ predicate on the "shield_enabled" field.
+func ShieldEnabledNEQ(v bool) predicate.Group {
+	return predicate.Group(sql.FieldNEQ(FieldShieldEnabled, v))
 }
 
 // PeakStartEQ applies the EQ predicate on the "peak_start" field.

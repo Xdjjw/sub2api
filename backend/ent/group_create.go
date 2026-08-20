@@ -120,6 +120,20 @@ func (_c *GroupCreate) SetNillablePeakRateEnabled(v *bool) *GroupCreate {
 	return _c
 }
 
+// SetShieldEnabled sets the "shield_enabled" field.
+func (_c *GroupCreate) SetShieldEnabled(v bool) *GroupCreate {
+	_c.mutation.SetShieldEnabled(v)
+	return _c
+}
+
+// SetNillableShieldEnabled sets the "shield_enabled" field if the given value is not nil.
+func (_c *GroupCreate) SetNillableShieldEnabled(v *bool) *GroupCreate {
+	if v != nil {
+		_c.SetShieldEnabled(*v)
+	}
+	return _c
+}
+
 // SetPeakStart sets the "peak_start" field.
 func (_c *GroupCreate) SetPeakStart(v string) *GroupCreate {
 	_c.mutation.SetPeakStart(v)
@@ -999,6 +1013,10 @@ func (_c *GroupCreate) defaults() error {
 		v := group.DefaultPeakRateEnabled
 		_c.mutation.SetPeakRateEnabled(v)
 	}
+	if _, ok := _c.mutation.ShieldEnabled(); !ok {
+		v := group.DefaultShieldEnabled
+		_c.mutation.SetShieldEnabled(v)
+	}
 	if _, ok := _c.mutation.PeakStart(); !ok {
 		v := group.DefaultPeakStart
 		_c.mutation.SetPeakStart(v)
@@ -1163,6 +1181,9 @@ func (_c *GroupCreate) check() error {
 	}
 	if _, ok := _c.mutation.PeakRateEnabled(); !ok {
 		return &ValidationError{Name: "peak_rate_enabled", err: errors.New(`ent: missing required field "Group.peak_rate_enabled"`)}
+	}
+	if _, ok := _c.mutation.ShieldEnabled(); !ok {
+		return &ValidationError{Name: "shield_enabled", err: errors.New(`ent: missing required field "Group.shield_enabled"`)}
 	}
 	if _, ok := _c.mutation.PeakStart(); !ok {
 		return &ValidationError{Name: "peak_start", err: errors.New(`ent: missing required field "Group.peak_start"`)}
@@ -1383,6 +1404,10 @@ func (_c *GroupCreate) createSpec() (*Group, *sqlgraph.CreateSpec) {
 	if value, ok := _c.mutation.PeakRateEnabled(); ok {
 		_spec.SetField(group.FieldPeakRateEnabled, field.TypeBool, value)
 		_node.PeakRateEnabled = value
+	}
+	if value, ok := _c.mutation.ShieldEnabled(); ok {
+		_spec.SetField(group.FieldShieldEnabled, field.TypeBool, value)
+		_node.ShieldEnabled = value
 	}
 	if value, ok := _c.mutation.PeakStart(); ok {
 		_spec.SetField(group.FieldPeakStart, field.TypeString, value)
@@ -1847,6 +1872,18 @@ func (u *GroupUpsert) SetPeakRateEnabled(v bool) *GroupUpsert {
 // UpdatePeakRateEnabled sets the "peak_rate_enabled" field to the value that was provided on create.
 func (u *GroupUpsert) UpdatePeakRateEnabled() *GroupUpsert {
 	u.SetExcluded(group.FieldPeakRateEnabled)
+	return u
+}
+
+// SetShieldEnabled sets the "shield_enabled" field.
+func (u *GroupUpsert) SetShieldEnabled(v bool) *GroupUpsert {
+	u.Set(group.FieldShieldEnabled, v)
+	return u
+}
+
+// UpdateShieldEnabled sets the "shield_enabled" field to the value that was provided on create.
+func (u *GroupUpsert) UpdateShieldEnabled() *GroupUpsert {
+	u.SetExcluded(group.FieldShieldEnabled)
 	return u
 }
 
@@ -2918,6 +2955,20 @@ func (u *GroupUpsertOne) SetPeakRateEnabled(v bool) *GroupUpsertOne {
 func (u *GroupUpsertOne) UpdatePeakRateEnabled() *GroupUpsertOne {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdatePeakRateEnabled()
+	})
+}
+
+// SetShieldEnabled sets the "shield_enabled" field.
+func (u *GroupUpsertOne) SetShieldEnabled(v bool) *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetShieldEnabled(v)
+	})
+}
+
+// UpdateShieldEnabled sets the "shield_enabled" field to the value that was provided on create.
+func (u *GroupUpsertOne) UpdateShieldEnabled() *GroupUpsertOne {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateShieldEnabled()
 	})
 }
 
@@ -4308,6 +4359,20 @@ func (u *GroupUpsertBulk) SetPeakRateEnabled(v bool) *GroupUpsertBulk {
 func (u *GroupUpsertBulk) UpdatePeakRateEnabled() *GroupUpsertBulk {
 	return u.Update(func(s *GroupUpsert) {
 		s.UpdatePeakRateEnabled()
+	})
+}
+
+// SetShieldEnabled sets the "shield_enabled" field.
+func (u *GroupUpsertBulk) SetShieldEnabled(v bool) *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.SetShieldEnabled(v)
+	})
+}
+
+// UpdateShieldEnabled sets the "shield_enabled" field to the value that was provided on create.
+func (u *GroupUpsertBulk) UpdateShieldEnabled() *GroupUpsertBulk {
+	return u.Update(func(s *GroupUpsert) {
+		s.UpdateShieldEnabled()
 	})
 }
 
