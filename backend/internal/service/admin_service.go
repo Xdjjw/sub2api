@@ -235,13 +235,13 @@ type CreateGroupInput struct {
 	PeakEnd            string
 	PeakRateMultiplier *float64
 	// 破限(shield)开关
-	ShieldEnabled bool
-	ImagePrice1K       *float64
-	ImagePrice2K       *float64
-	ImagePrice4K       *float64
-	VideoPrice480P     *float64
-	VideoPrice720P     *float64
-	VideoPrice1080P    *float64
+	ShieldEnabled   bool
+	ImagePrice1K    *float64
+	ImagePrice2K    *float64
+	ImagePrice4K    *float64
+	VideoPrice480P  *float64
+	VideoPrice720P  *float64
+	VideoPrice1080P *float64
 	// VideoModelPrices 可选按模型族×分辨率覆盖视频每秒单价。
 	VideoModelPrices map[string]map[string]float64
 	// Codex alpha/search 网页搜索单次价格（USD/次，仅 openai 平台使用）；nil/负数按默认价 0.01 处理
@@ -312,13 +312,13 @@ type UpdateGroupInput struct {
 	PeakEnd            *string
 	PeakRateMultiplier *float64
 	// 破限(shield)开关（nil 表示不修改）
-	ShieldEnabled *bool
-	ImagePrice1K       *float64
-	ImagePrice2K       *float64
-	ImagePrice4K       *float64
-	VideoPrice480P     *float64
-	VideoPrice720P     *float64
-	VideoPrice1080P    *float64
+	ShieldEnabled   *bool
+	ImagePrice1K    *float64
+	ImagePrice2K    *float64
+	ImagePrice4K    *float64
+	VideoPrice480P  *float64
+	VideoPrice720P  *float64
+	VideoPrice1080P *float64
 	// VideoModelPrices 可选按模型族×分辨率覆盖；nil 表示不修改，空 map 表示清除。
 	VideoModelPrices map[string]map[string]float64
 	// Codex alpha/search 网页搜索单次价格（USD/次）；nil 表示不修改，负数表示清除回默认价 0.01

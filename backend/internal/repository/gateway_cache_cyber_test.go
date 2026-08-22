@@ -124,8 +124,8 @@ func TestGatewayCacheCyberTurnPrunePlanIgnoresMalformedValues(t *testing.T) {
 	store, ok := NewGatewayCache(client).(service.CyberTurnPruneStore)
 	require.True(t, ok)
 
-	server.Set(cyberTurnPrunePlanPrefix+"bad", "not-json")
-	server.Set(cyberTurnPrunePlanPrefix+"mismatch", `{"version":1,"full_transcript_key":"different"}`)
+	require.NoError(t, server.Set(cyberTurnPrunePlanPrefix+"bad", "not-json"))
+	require.NoError(t, server.Set(cyberTurnPrunePlanPrefix+"mismatch", `{"version":1,"full_transcript_key":"different"}`))
 	plans, err := store.FindCyberTurnPrunePlans(context.Background(), []string{"bad", "mismatch"})
 	require.NoError(t, err)
 	require.Empty(t, plans)

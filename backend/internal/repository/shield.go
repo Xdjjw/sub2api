@@ -34,9 +34,6 @@ func shieldEnabled() bool { return shieldEnabledFlag.Load() }
 // 普通提示词中的标题文字判断，避免伪命中跳过注入。
 const shieldInstructionsSentinel = service.ShieldInstructionsSentinel
 
-// shieldInstructionsBoost 追加到请求 instructions 尾部的输出纪律锚点。
-const shieldInstructionsBoost = service.ShieldInstructionsBoost
-
 type shieldTransformOptions struct {
 	// resetSession 只能由已确认的 cyber 会话重置路径显式打开。
 	// 普通 Shield 请求必须保留粘性和 Responses 续链语义。
