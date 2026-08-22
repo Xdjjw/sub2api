@@ -31,7 +31,6 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
-
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
@@ -102,8 +101,19 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
-	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatChat) {
+	if apiKey.Group != nil && apiKey.Group.ShieldEnabled {
+		body, _ = service.ApplyShieldToChatCompletionsBody(body)
+	}
+	cyberSessionKeyBody := body
+	cyberSessionReset := false
+	cyberSessionAction, cyberBlockKeyChat := h.checkCyberSessionBlock(c, apiKey, cyberSessionKeyBody, reqModel, cyberBlockFormatChat)
+	switch cyberSessionAction {
+	case cyberSessionBlockRejected:
 		return
+	case cyberSessionBlockReset:
+		cyberSessionReset = true
+		body, _ = stripOpenAISessionIdentifiersFromBody(body)
+		reqLog.Info("openai_chat_completions.shield_cyber_session_reset")
 	}
 
 	// 解析渠道级模型映射
@@ -137,8 +147,12 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
-	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
+	sessionHash := ""
+	promptCacheKey := ""
+	if !cyberSessionReset {
+		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
+		promptCacheKey = h.gatewayService.ExtractSessionID(c, body)
+	}
 
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
@@ -239,10 +253,6 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 			}()
 			return h.gatewayService.ForwardAsChatCompletions(c.Request.Context(), c, account, forwardBody, promptCacheKey, "")
 		}()
-		cyberBlockKeyChat := ""
-		if service.GetOpsCyberPolicy(c) != nil {
-			cyberBlockKeyChat = service.CyberSessionBlockKey(apiKey.ID, c, body)
-		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyChat, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()

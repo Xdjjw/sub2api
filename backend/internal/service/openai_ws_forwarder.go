@@ -253,6 +253,10 @@ type OpenAIWSIngressHooks struct {
 	InitialRequestModel string
 	// InitialTurnStartedAt freezes when the first response.create was accepted.
 	InitialTurnStartedAt time.Time
+	// InitialSessionHashOverride bypasses payload-derived ctx-pool routing for
+	// an explicitly reset first turn. It is already an opaque derived hash and
+	// must never be forwarded as a client session identifier.
+	InitialSessionHashOverride string
 	// MaxReasoningEffort limits explicit reasoning effort values for this WS session.
 	MaxReasoningEffort string
 	// ReasoningEffortMappings rewrites explicit effort values for this WS session.
@@ -260,6 +264,10 @@ type OpenAIWSIngressHooks struct {
 	TurnStarted             func(turn int, startedAt time.Time)
 	BeforeTurn              func(turn int) error
 	BeforeRequest           func(turn int, payload []byte, originalModel string) error
+	// TransformRequest rewrites a validated response.create payload after local
+	// policy checks and before replay/model mapping. It must be idempotent because
+	// retry paths can revisit the same turn.
+	TransformRequest func(turn int, payload []byte) ([]byte, error)
 	// MapRequestModel resolves the current turn's client model to the model
 	// that must be written into the upstream response.create frame.
 	MapRequestModel func(turn int, originalModel string) (string, error)

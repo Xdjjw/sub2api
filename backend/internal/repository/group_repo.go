@@ -591,6 +591,9 @@ func groupListOrder(params pagination.PaginationParams) []func(*entsql.Selector)
 	case "is_exclusive":
 		field = group.FieldIsExclusive
 		defaultOrder = false
+	case "shield_enabled":
+		field = group.FieldShieldEnabled
+		defaultOrder = false
 	case "status":
 		field = group.FieldStatus
 		defaultOrder = false

@@ -54,18 +54,3 @@ func WithHTTPUpstreamRedirectsDisabled(ctx context.Context) context.Context {
 func HTTPUpstreamRedirectsDisabled(ctx context.Context) bool {
 	return ctx != nil && ctx.Value(httpUpstreamDisableRedirectsContextKey{}) == true
 }
-
-type shieldEnabledContextKey struct{}
-
-// WithShieldEnabled marks this upstream request for shield transformation.
-func WithShieldEnabled(ctx context.Context) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, shieldEnabledContextKey{}, true)
-}
-
-// ShieldEnabledFromContext reports whether shield transformation is requested.
-func ShieldEnabledFromContext(ctx context.Context) bool {
-	return ctx != nil && ctx.Value(shieldEnabledContextKey{}) == true
-}

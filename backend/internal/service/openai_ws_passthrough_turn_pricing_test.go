@@ -147,6 +147,65 @@ func TestPassthroughIngressFreezesBinarySubsequentTurnBeforeRequestPolicy(t *tes
 	testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t, coderws.MessageBinary)
 }
 
+func TestPassthroughIngressTransformsSubsequentResponseCreate(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	controlCtx, cancelControl := context.WithCancelCause(context.Background())
+	defer cancelControl(context.Canceled)
+
+	upstream := newStagedPassthroughConn()
+	transformedTurns := make(chan int, 1)
+	hooks := &OpenAIWSIngressHooks{
+		InitialTurnStartedAt: time.Now(),
+		TransformRequest: func(turn int, payload []byte) ([]byte, error) {
+			transformed, _ := ApplyShieldToResponsesBody(payload)
+			transformedTurns <- turn
+			return transformed, nil
+		},
+	}
+
+	server, serverErr := startPassthroughHookRecordingServer(
+		t,
+		controlCtx,
+		newPassthroughLifecycleService(passthroughLifecycleConfig(), upstream),
+		passthroughLifecycleAccount(),
+		hooks,
+	)
+	defer server.Close()
+	clientConn := dialPassthroughLifecycleClient(t, server)
+	defer func() { _ = clientConn.CloseNow() }()
+
+	// The handler transforms the first frame before entering passthrough. This
+	// service-level hook owns only frames read by the relay after that bootstrap.
+	require.Equal(t, "response.create", gjson.GetBytes(requirePassthroughUpstreamWrite(t, upstream, 3*time.Second), "type").String())
+
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_first","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+	firstCompleted, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "resp_first", gjson.GetBytes(firstCompleted, "response.id").String())
+
+	writeCtx, cancelWrite := context.WithTimeout(context.Background(), 3*time.Second)
+	err = clientConn.Write(writeCtx, coderws.MessageText, []byte(`{"type":"response.create","model":"gpt-5.1","previous_response_id":"resp_first"}`))
+	cancelWrite()
+	require.NoError(t, err)
+
+	secondUpstream := requirePassthroughUpstreamWrite(t, upstream, 3*time.Second)
+	require.Contains(t, gjson.GetBytes(secondUpstream, "instructions").String(), ShieldInstructionsSentinel)
+	require.Equal(t, 2, <-transformedTurns)
+
+	upstream.Send(`{"type":"response.completed","response":{"id":"resp_second","model":"gpt-5.1","usage":{"input_tokens":1,"output_tokens":1}}}`)
+	secondCompleted, err := readPassthroughLifecycleFrame(t, clientConn, 3*time.Second)
+	require.NoError(t, err)
+	require.Equal(t, "resp_second", gjson.GetBytes(secondCompleted, "response.id").String())
+
+	_ = clientConn.CloseNow()
+	cancelControl(context.Canceled)
+	select {
+	case <-serverErr:
+	case <-time.After(3 * time.Second):
+		t.Fatal("passthrough ingress did not exit")
+	}
+}
+
 func testPassthroughIngressFreezesSubsequentTurnBeforeRequestPolicy(t *testing.T, secondMessageType coderws.MessageType) {
 	t.Helper()
 	gin.SetMode(gin.TestMode)

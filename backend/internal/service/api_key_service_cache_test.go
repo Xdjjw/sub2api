@@ -209,6 +209,7 @@ func TestAPIKeyService_GetByKey_UsesL2Cache(t *testing.T) {
 				ID:                  groupID,
 				Name:                "g",
 				Platform:            PlatformAnthropic,
+				ShieldEnabled:       true,
 				Status:              StatusActive,
 				SubscriptionType:    SubscriptionTypeStandard,
 				RateMultiplier:      1,
@@ -228,6 +229,7 @@ func TestAPIKeyService_GetByKey_UsesL2Cache(t *testing.T) {
 	require.Equal(t, int64(1), apiKey.ID)
 	require.Equal(t, int64(2), apiKey.User.ID)
 	require.Equal(t, groupID, apiKey.Group.ID)
+	require.True(t, apiKey.Group.ShieldEnabled)
 	require.True(t, apiKey.Group.ModelRoutingEnabled)
 	require.Equal(t, map[string][]int64{"claude-opus-*": {1, 2}}, apiKey.Group.ModelRouting)
 }
@@ -457,19 +459,30 @@ func TestAPIKeyService_GetByKey_CacheMissStoresL2(t *testing.T) {
 func TestAPIKeyService_GetByKey_UsesL1Cache(t *testing.T) {
 	var calls int32
 	cache := &authCacheStub{}
+	groupID := int64(44)
 	repo := &authRepoStub{
 		getByKeyForAuth: func(ctx context.Context, key string) (*APIKey, error) {
 			atomic.AddInt32(&calls, 1)
 			return &APIKey{
-				ID:     21,
-				UserID: 3,
-				Status: StatusActive,
+				ID:      21,
+				UserID:  3,
+				GroupID: &groupID,
+				Status:  StatusActive,
 				User: &User{
 					ID:          3,
 					Status:      StatusActive,
 					Role:        RoleUser,
 					Balance:     5,
 					Concurrency: 2,
+				},
+				Group: &Group{
+					ID:               groupID,
+					Name:             "shield-enabled",
+					Platform:         PlatformOpenAI,
+					Status:           StatusActive,
+					SubscriptionType: SubscriptionTypeStandard,
+					RateMultiplier:   1,
+					ShieldEnabled:    true,
 				},
 			}, nil
 		},
@@ -483,14 +496,18 @@ func TestAPIKeyService_GetByKey_UsesL1Cache(t *testing.T) {
 	svc := NewAPIKeyService(repo, nil, nil, nil, nil, cache, cfg)
 	require.NotNil(t, svc.authCacheL1)
 
-	_, err := svc.GetByKey(context.Background(), "k-l1")
+	cold, err := svc.GetByKey(context.Background(), "k-l1")
 	require.NoError(t, err)
+	require.NotNil(t, cold.Group)
+	require.True(t, cold.Group.ShieldEnabled)
 	svc.authCacheL1.Wait()
 	cacheKey := svc.authCacheKey("k-l1")
 	_, ok := svc.authCacheL1.Get(cacheKey)
 	require.True(t, ok)
-	_, err = svc.GetByKey(context.Background(), "k-l1")
+	hot, err := svc.GetByKey(context.Background(), "k-l1")
 	require.NoError(t, err)
+	require.NotNil(t, hot.Group)
+	require.True(t, hot.Group.ShieldEnabled)
 	require.Equal(t, int32(1), atomic.LoadInt32(&calls))
 }
 

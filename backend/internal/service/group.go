@@ -27,11 +27,11 @@ type Group struct {
 	PeakStart          string
 	PeakEnd            string
 	PeakRateMultiplier float64
-	// ShieldEnabled: 分组级破限(shield)开关 —— 出站请求做 AGENTS 副本剔除/历史瘦身/纪律锚点注入
+	// ShieldEnabled: 分组级 Shield 开关——按协议注入输出纪律，必要时重置已封禁会话
 	ShieldEnabled bool
-	IsExclusive        bool
-	Status             string
-	Hydrated           bool // indicates the group was loaded from a trusted repository source
+	IsExclusive   bool
+	Status        string
+	Hydrated      bool // indicates the group was loaded from a trusted repository source
 	// DuplicateOperationID is internal persistence metadata used only to recover
 	// an already committed one-click copy. It must never be mapped to API DTOs.
 	DuplicateOperationID string

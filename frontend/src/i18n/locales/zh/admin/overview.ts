@@ -141,7 +141,6 @@ export default {
         restoreFailed: '恢复失败',
       },
       columns: {
-    shield: "破限",
         status: '状态',
         fileName: '文件名',
         size: '大小',
@@ -798,6 +797,7 @@ export default {
         rateDefault: '默认',
         rpmDefault: '默认',
         exclusive: '独占',
+        shield: '破限',
         type: '类型',
         priority: '优先级',
         apiKeys: 'API 密钥数',
@@ -1035,12 +1035,13 @@ export default {
         multiplierHint: '作用于 token 计费倍率；token 计费的图片 token 同样适用，0 表示高峰 token 请求按 0 倍计费'
       },
       shield: {
-    enable: "启用破限 Shield",
-    enabledHint: "该分组下的所有 AI 请求将自动做内容变换（AGENTS 副本剔除 + 历史瘦身 + 输出纪律注入）",
-    disabledHint: "该分组的请求原样转发，不做任何变换",
-    badge: "破限",
-  },
-  profitControl: {
+        enable: '启用破限 Shield',
+        enabledHint:
+          '该分组的 OpenAI 兼容文本请求会按协议注入输出纪律并保留正常会话续链；仅命中已封禁的 cyber 会话时，才会清除粘性请求头和 body 会话标识后重新调度。',
+        disabledHint: '该分组不注入 Shield 输出纪律，也不执行 cyber 会话自动重置。',
+        badge: '破限'
+      },
+      profitControl: {
         enable: '启用利润控制',
         enabledHint: '调度时仅允许"账号倍率 ≤ 请求实际下游倍率 ×（1 − 最低毛利率 − 安全缓冲）"的账号进入候选池；账号倍率可手工维护或由探测同步，既有排序、粘性与熔断在合格账号间照常工作。图片/视频调度暂不参与。',
         disabledHint: '关闭后调度不做利润过滤，账号倍率高于下游倍率的账号也会被选中，可能产生亏损请求。',

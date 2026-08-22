@@ -450,10 +450,18 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	groupID := getOpenAIGroupIDFromContext(c)
 	storeDisabledConnMode := s.openAIWSStoreDisabledConnMode()
 	sessionHash := ""
+	initialSessionHashOverride := ""
+	if hooks != nil {
+		initialSessionHashOverride = strings.TrimSpace(hooks.InitialSessionHashOverride)
+	}
 	preferredConnID := ""
 	storeDisabled := false
 	refreshIngressRouteState := func(payload openAIWSClientPayload) {
-		sessionHash = s.GenerateSessionHash(c, payload.rawForHash)
+		if initialSessionHashOverride != "" {
+			sessionHash = initialSessionHashOverride
+		} else {
+			sessionHash = s.GenerateSessionHash(c, payload.rawForHash)
+		}
 		if turnState == "" && stateStore != nil && sessionHash != "" {
 			if savedTurnState, ok := stateStore.GetSessionTurnState(groupID, sessionHash); ok {
 				turnState = savedTurnState
@@ -499,6 +507,32 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			if turn > 1 && hooks != nil && hooks.BeforeRequest != nil {
 				if err := hooks.BeforeRequest(turn, currentBridgePayload.payloadRaw, currentBridgePayload.originalModel); err != nil {
 					return err
+				}
+			}
+			if hooks != nil && hooks.TransformRequest != nil {
+				beforeHeaderSessionID := explicitOpenAIHeaderSessionID(c)
+				beforeTurnStateHeader := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+				beforeTurnMetadataHeader := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
+				beforePromptCacheKey := currentBridgePayload.promptCacheKey
+				beforePreviousResponseID := currentBridgePayload.previousResponseID
+				transformedPayload, transformErr := hooks.TransformRequest(turn, currentBridgePayload.payloadRaw)
+				if transformErr != nil {
+					return transformErr
+				}
+				currentBridgePayload.payloadRaw = transformedPayload
+				currentBridgePayload.payloadBytes = len(transformedPayload)
+				currentBridgePayload.promptCacheKey = strings.TrimSpace(gjson.GetBytes(transformedPayload, "prompt_cache_key").String())
+				currentBridgePayload.previousResponseID = strings.TrimSpace(gjson.GetBytes(transformedPayload, "previous_response_id").String())
+				sessionResetByTransform :=
+					(beforeHeaderSessionID != "" && explicitOpenAIHeaderSessionID(c) == "") ||
+						(beforeTurnStateHeader != "" && strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader)) == "") ||
+						(beforeTurnMetadataHeader != "" && strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)) == "") ||
+						(beforePromptCacheKey != "" && currentBridgePayload.promptCacheKey == "") ||
+						(beforePreviousResponseID != "" && currentBridgePayload.previousResponseID == "")
+				if sessionResetByTransform {
+					turnState = ""
+					resetSeed := fmt.Sprintf("openai-ws-http-bridge-session-reset:%d:%d:%d", account.ID, turn, time.Now().UnixNano())
+					sessionHash, _ = deriveOpenAISessionHashes(resetSeed)
 				}
 			}
 			if hooks != nil && hooks.BeforeTurn != nil {
@@ -739,13 +773,14 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 	}
 
 	agentTaskRecoveryTried := false
+	forceNewSessionConn := false
 	var acquireTurnLease func(int, string, bool) (*openAIWSConnLease, error)
 	acquireTurnLease = func(turn int, preferred string, forcePreferredConn bool) (*openAIWSConnLease, error) {
 		req := cloneOpenAIWSAcquireRequest(baseAcquireReq)
 		req.PreferredConnID = strings.TrimSpace(preferred)
 		req.ForcePreferredConn = forcePreferredConn
 		// dedicated 模式下每次获取均新建连接，避免跨会话复用残留上下文。
-		req.ForceNewConn = dedicatedMode
+		req.ForceNewConn = dedicatedMode || forceNewSessionConn
 		acquireCtx, acquireCancel := context.WithTimeout(ctx, acquireTimeout)
 		lease, acquireErr := pool.Acquire(acquireCtx, req)
 		acquireCancel()
@@ -806,6 +841,7 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 			return nil, acquireErr
 		}
 		connID := strings.TrimSpace(lease.ConnID())
+		forceNewSessionConn = false
 		if handshakeTurnState := strings.TrimSpace(lease.HandshakeHeader(openAIWSTurnStateHeader)); handshakeTurnState != "" {
 			turnState = handshakeTurnState
 			if stateStore != nil && sessionHash != "" {
@@ -1297,6 +1333,56 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 				return err
 			}
 		}
+		if hooks != nil && hooks.TransformRequest != nil {
+			beforeHeaderSessionID := explicitOpenAIHeaderSessionID(c)
+			beforeTurnStateHeader := strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader))
+			beforeTurnMetadataHeader := strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader))
+			beforePromptCacheKey := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "prompt_cache_key"))
+			beforePreviousResponseID := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id"))
+			transformedPayload, transformErr := hooks.TransformRequest(turn, currentPayload)
+			if transformErr != nil {
+				return transformErr
+			}
+			currentPayload = transformedPayload
+			currentPayloadBytes = len(transformedPayload)
+			afterPromptCacheKey := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "prompt_cache_key"))
+			afterPreviousResponseID := strings.TrimSpace(openAIWSPayloadStringFromRaw(currentPayload, "previous_response_id"))
+			sessionResetByTransform :=
+				(beforeHeaderSessionID != "" && explicitOpenAIHeaderSessionID(c) == "") ||
+					(beforeTurnStateHeader != "" && strings.TrimSpace(c.GetHeader(openAIWSTurnStateHeader)) == "") ||
+					(beforeTurnMetadataHeader != "" && strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)) == "") ||
+					(beforePromptCacheKey != "" && afterPromptCacheKey == "") ||
+					(beforePreviousResponseID != "" && afterPreviousResponseID == "")
+			if sessionResetByTransform {
+				turnState = ""
+				preferredConnID = ""
+				resetSessionLease(true)
+				forceNewSessionConn = true
+				resetSeed := fmt.Sprintf("openai-ws-session-reset:%d:%d:%d", account.ID, turn, time.Now().UnixNano())
+				sessionHash, _ = deriveOpenAISessionHashes(resetSeed)
+			}
+			if turn > 1 && (beforePromptCacheKey != "" || sessionResetByTransform) {
+				routingFields := gjson.GetManyBytes(currentPayload, "model", "service_tier")
+				updatedHeaders, _, updateErr := s.buildOpenAIWSHeaders(
+					ctx,
+					c,
+					account,
+					token,
+					wsDecision,
+					isCodexCLI,
+					turnState,
+					strings.TrimSpace(c.GetHeader(openAIWSTurnMetadataHeader)),
+					afterPromptCacheKey,
+					routingFields[0].String(),
+					routingFields[1].String(),
+				)
+				if updateErr != nil {
+					logOpenAIWSModeInfo("ingress_ws_update_headers_failed account_id=%d err=%v", account.ID, updateErr)
+				} else {
+					baseAcquireReq.Headers = updatedHeaders
+				}
+			}
+		}
 		if !skipBeforeTurn && hooks != nil && hooks.BeforeTurn != nil {
 			if err := hooks.BeforeTurn(turn); err != nil {
 				return err
@@ -1685,8 +1771,11 @@ func (s *OpenAIGatewayService) ProxyResponsesWebSocketFromClient(
 		}
 		nextRoutingFields := gjson.GetManyBytes(nextPayload.payloadRaw, "model", "service_tier")
 		if nextPayload.promptCacheKey != "" {
-			// ingress 会话在整个客户端 WS 生命周期内复用同一上游连接；
-			// prompt_cache_key 对握手头的更新仅在未来需要重新建连时生效。
+			// Keep the next turn's prompt-cache identity available if this turn
+			// needs to acquire a fresh upstream lease.  A Shield transform may
+			// subsequently clear it for an explicitly reset cyber session; the
+			// transform hook rebuilds the headers from the post-transform payload
+			// in that case.
 			updatedHeaders, _, updHdrErr := s.buildOpenAIWSHeaders(
 				ctx,
 				c,

@@ -296,7 +296,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.errorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
-
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.errorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
@@ -406,6 +405,9 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		h.openAISecurityAuditError(c, decision)
 		return
 	}
+	if apiKey.Group != nil && apiKey.Group.ShieldEnabled {
+		body, _ = service.ApplyShieldToResponsesBody(body)
+	}
 
 	// 使用 IsExplicitImageGenerationIntent 排除被动 image_gen namespace 声明。
 	// Codex 在所有请求中被动声明 image_gen namespace，宽泛检测会导致禁了生图的
@@ -429,7 +431,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 
 	// 解析渠道级模型映射
 	channelMapping, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
-	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
 	seedOpenAIForwardImageIntentHint(c, channelMapping.Mapped, imageIntent)
 	forwardModel := reqModel
 	if channelMapping.Mapped {
@@ -478,11 +479,29 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		return
 	}
 
-	// Generate session hash (header first; fallback to prompt_cache_key)
-	sessionHash := h.gatewayService.GenerateSessionHash(c, sessionHashBody)
-	if h.rejectIfCyberSessionBlocked(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses) {
+	// Resolve a locally blocked session before deriving any sticky-routing state.
+	// Shield groups reset the outbound session; other groups keep the existing
+	// rejection behavior.
+	cyberSessionReset := false
+	cyberSessionAction, cyberBlockKeyHTTP := h.checkCyberSessionBlock(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses)
+	switch cyberSessionAction {
+	case cyberSessionBlockRejected:
 		return
+	case cyberSessionBlockReset:
+		cyberSessionReset = true
+		body, _ = stripOpenAISessionIdentifiersFromBody(body)
+		reqLog.Info("openai.shield_cyber_session_reset")
 	}
+
+	// A reset request deliberately skips sticky routing. Re-hashing the remaining
+	// content would commonly select the same account again and defeat the reset.
+	sessionHash := ""
+	if !cyberSessionReset {
+		sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	}
+	// Freeze the canonical outbound body only after an optional cyber reset;
+	// otherwise channel mapping would retain the pre-reset session identifiers.
+	forwardBody := openAIModelMappedBody(body, channelMapping.Mapped, channelMapping.MappedModel, h.gatewayService.ReplaceModelInBody)
 	requireCompact := legacyCompact
 
 	maxAccountSwitches := h.maxAccountSwitches
@@ -619,10 +638,6 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			}()
 			return h.gatewayService.Forward(c.Request.Context(), c, account, attemptBody)
 		}()
-		cyberBlockKeyHTTP := ""
-		if service.GetOpsCyberPolicy(c) != nil {
-			cyberBlockKeyHTTP = service.CyberSessionBlockKey(apiKey.ID, c, sessionHashBody)
-		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
@@ -959,7 +974,6 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		h.anthropicErrorResponse(c, http.StatusUnauthorized, "authentication_error", "Invalid API key")
 		return
 	}
-
 	subject, ok := middleware2.GetAuthSubjectFromContext(c)
 	if !ok {
 		h.anthropicErrorResponse(c, http.StatusInternalServerError, "api_error", "User context not found")
@@ -1029,6 +1043,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		h.anthropicSecurityAuditError(c, decision)
 		return
 	}
+	if apiKey.Group != nil && apiKey.Group.ShieldEnabled {
+		body, _ = service.ApplyShieldToAnthropicMessagesBody(body)
+	}
 
 	// 解析渠道级模型映射
 	channelMappingMsg, _ := h.gatewayService.ResolveChannelMappingAndRestrict(c.Request.Context(), apiKey.GroupID, reqModel)
@@ -1063,11 +1080,27 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateSessionHash(c, body)
-	promptCacheKey := h.gatewayService.ExtractSessionID(c, body)
-	sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
-	if h.rejectIfCyberSessionBlocked(c, apiKey, body, reqModel, cyberBlockFormatAnthropic) {
+	cyberSessionKeyBody := body
+	cyberSessionReset := false
+	cyberSessionAction, cyberBlockKeyMsg := h.checkCyberSessionBlock(c, apiKey, cyberSessionKeyBody, reqModel, cyberBlockFormatAnthropic)
+	switch cyberSessionAction {
+	case cyberSessionBlockRejected:
 		return
+	case cyberSessionBlockReset:
+		cyberSessionReset = true
+		body, _ = stripOpenAISessionIdentifiersFromBody(body)
+		// The mapped-body cache was created from the pre-reset request above.
+		// Rebuild it so failover attempts cannot reintroduce the blocked session.
+		mappedBodyForMessages = newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
+		reqLog.Info("openai_messages.shield_cyber_session_reset")
+	}
+
+	sessionHash := ""
+	promptCacheKey := ""
+	if !cyberSessionReset {
+		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
+		promptCacheKey = h.gatewayService.ExtractSessionID(c, body)
+		sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
 	}
 
 	maxAccountSwitches := h.maxAccountSwitches
@@ -1176,10 +1209,6 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 			}()
 			return h.gatewayService.ForwardAsAnthropic(c.Request.Context(), c, account, forwardBody, promptCacheKey, defaultMappedModel)
 		}()
-		cyberBlockKeyMsg := ""
-		if service.GetOpsCyberPolicy(c) != nil {
-			cyberBlockKeyMsg = service.CyberSessionBlockKey(apiKey.ID, c, body)
-		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockKeyMsg, clientRequestedUsageFields(c, channelMappingMsg, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
 		upstreamLatencyMs, _ := getContextInt64(c, service.OpsUpstreamLatencyMsKey)
@@ -1807,6 +1836,9 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		closeOpenAIClientWS(wsConn, securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision))
 		return
 	}
+	if apiKey.Group != nil && apiKey.Group.ShieldEnabled {
+		firstMessage, _ = service.ApplyShieldToResponsesBody(firstMessage)
+	}
 
 	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
 	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
@@ -1814,16 +1846,26 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	// F5a: 握手层会话屏蔽检查。WS 握手无 body，显式标识仅来自握手 header
-	// （session_id / conversation_id）；无标识则放行，连接内仍有本地 flag 兜底。
-	cyberBlockKey := service.CyberSessionBlockKey(apiKey.ID, c, nil)
+	// F5a: firstMessage is already available here, so include both headers and
+	// prompt_cache_key in the block key. Shield groups reset the first turn
+	// instead of rejecting the connection.
+	cyberBlockKey := service.CyberSessionBlockKey(apiKey.ID, c, firstMessage)
+	cyberSessionReset := false
 	if cyberBlockKey != "" && h.gatewayService.IsCyberSessionBlocked(c.Request.Context(), cyberBlockKey) {
-		writeCyberSessionBlockedWSError(c.Request.Context(), wsConn)
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "session blocked by cyber-security policy")
-		h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, reqModel, cyberBlockKey)
-		return
+		if apiKey.Group != nil && apiKey.Group.ShieldEnabled {
+			stripOpenAISessionIdentifiers(c)
+			firstMessage, _ = stripOpenAISessionIdentifiersFromBody(firstMessage)
+			previousResponseID = ""
+			cyberSessionReset = true
+			reqLog.Info("openai.websocket_shield_cyber_session_reset")
+		} else {
+			writeCyberSessionBlockedWSError(c.Request.Context(), wsConn)
+			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "session blocked by cyber-security policy")
+			h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, reqModel, cyberBlockKey)
+			return
+		}
 	}
-	cyberBlockedThisConn := false
+	var cyberBlockedThisConn atomic.Bool
 
 	// 解析渠道级模型映射
 	channelMappingWS, _ := h.gatewayService.ResolveChannelMappingAndRestrict(ctx, apiKey.GroupID, reqModel)
@@ -1887,11 +1929,23 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		return
 	}
 
-	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(
-		c,
-		firstMessage,
-		openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID),
-	)
+	wsFallbackSessionSeed := openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID)
+	wsInternalSessionHashOverride := ""
+	if cyberSessionReset {
+		// A per-connection seed prevents the reset from reusing either the blocked
+		// explicit affinity or the deterministic fallback used by normal WS ingress.
+		wsFallbackSessionSeed += ":shield-reset:" + uuid.NewString()
+	}
+	sessionHashBody := firstMessage
+	if cyberSessionReset {
+		// GenerateSessionHashWithFallback prefers content-derived hashes, so pass a
+		// nil body to force the new reset seed.
+		sessionHashBody = nil
+	}
+	sessionHash := h.gatewayService.GenerateSessionHashWithFallback(c, sessionHashBody, wsFallbackSessionSeed)
+	if cyberSessionReset {
+		wsInternalSessionHashOverride = sessionHash
+	}
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	profitVetoCount := 0
@@ -2094,6 +2148,20 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		var requestPayloadHash string
 		var turnStartsMu sync.Mutex
 		turnStarts := make(map[int]time.Time, 4)
+		var turnCyberKeysMu sync.Mutex
+		turnCyberKeys := map[int]string{1: cyberBlockKey}
+		setTurnCyberKey := func(turn int, key string) {
+			turnCyberKeysMu.Lock()
+			turnCyberKeys[turn] = key
+			turnCyberKeysMu.Unlock()
+		}
+		takeTurnCyberKey := func(turn int) string {
+			turnCyberKeysMu.Lock()
+			key := turnCyberKeys[turn]
+			delete(turnCyberKeys, turn)
+			turnCyberKeysMu.Unlock()
+			return key
+		}
 		recordTurnStart := func(turn int, startedAt time.Time) {
 			if turn <= 0 || startedAt.IsZero() {
 				return
@@ -2117,16 +2185,22 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		// passthrough 没有 BeforeTurn 时，AfterTurn 回退到 TurnStarted 的所属 turn 时刻。
 		var turnPricing openAIWSTurnPricing
 		hooks := &service.OpenAIWSIngressHooks{
-			ClientLifecycleContext:  clientLifecycleCtx,
-			InitialRequestModel:     reqModel,
-			InitialTurnStartedAt:    firstTurnStartedAt,
-			MaxReasoningEffort:      maxReasoningEffort,
-			ReasoningEffortMappings: reasoningEffortMappings,
-			TurnStarted:             recordTurnStart,
+			ClientLifecycleContext:     clientLifecycleCtx,
+			InitialRequestModel:        reqModel,
+			InitialTurnStartedAt:       firstTurnStartedAt,
+			InitialSessionHashOverride: wsInternalSessionHashOverride,
+			MaxReasoningEffort:         maxReasoningEffort,
+			ReasoningEffortMappings:    reasoningEffortMappings,
+			TurnStarted:                recordTurnStart,
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
 				c.Set(securityAuditWSTurnContextKey, turn)
 				if turn == 1 {
 					return nil
+				}
+				// Passthrough does not call BeforeTurn, so enforce the previous
+				// turn's cyber terminal here before accepting another request.
+				if cyberBlockedThisConn.Load() {
+					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, cyberSessionBlockedClientMsg, nil)
 				}
 				if !gjson.ValidBytes(payload) {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "invalid websocket request payload", errors.New("invalid json"))
@@ -2143,6 +2217,27 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					return service.NewOpenAIWSClientCloseError(securityAuditWSCloseStatus(decision), securityAuditWSCloseReason(decision), nil)
 				}
 				return nil
+			},
+			TransformRequest: func(turn int, payload []byte) ([]byte, error) {
+				if turn > 1 {
+					turnCyberKey := service.CyberSessionBlockKey(apiKey.ID, c, payload)
+					setTurnCyberKey(turn, turnCyberKey)
+					if turnCyberKey != "" && h.gatewayService.IsCyberSessionBlocked(ctx, turnCyberKey) {
+						if apiKey.Group == nil || !apiKey.Group.ShieldEnabled {
+							writeCyberSessionBlockedWSError(ctx, wsConn)
+							h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, reqModel, turnCyberKey)
+							return payload, service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "session blocked by cyber-security policy", nil)
+						}
+						stripOpenAISessionIdentifiers(c)
+						payload, _ = stripOpenAISessionIdentifiersFromBody(payload)
+						reqLog.Info("openai.websocket_turn_shield_cyber_session_reset", zap.Int("turn", turn))
+					}
+				}
+				if apiKey.Group == nil || !apiKey.Group.ShieldEnabled {
+					return payload, nil
+				}
+				transformed, _ := service.ApplyShieldToResponsesBody(payload)
+				return transformed, nil
 			},
 			MapRequestModel: func(turn int, originalModel string) (string, error) {
 				model := strings.TrimSpace(originalModel)
@@ -2162,7 +2257,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			},
 			BeforeTurn: func(turn int) error {
 				// turn==1 的会话屏蔽已由握手层检查覆盖；连接内 flag 只拦截后续 turn。
-				if cyberBlockedThisConn {
+				if cyberBlockedThisConn.Load() {
 					return service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, cyberSessionBlockedClientMsg, nil)
 				}
 				// 长连接跨峰谷/倍率刷新防护：每个 turn 按当前时刻重装门并复核
@@ -2234,9 +2329,10 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 					turnUpstreamModel = turnRequestedModel
 				}
 				turnUsageFields := turnMapping.ToUsageFields(turnRequestedModel, turnUpstreamModel)
-				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, cyberBlockKey, turnUsageFields, requestPayloadHash)
+				turnCyberBlockKey := takeTurnCyberKey(turn)
+				h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, turnRequestedModel, turnErr != nil, turnCyberBlockKey, turnUsageFields, requestPayloadHash)
 				if service.GetOpsCyberPolicy(c) != nil {
-					cyberBlockedThisConn = true
+					cyberBlockedThisConn.Store(true)
 				}
 				if turnErr != nil {
 					if result == nil || result.ImageCount <= 0 {
@@ -3194,32 +3290,40 @@ const (
 	cyberBlockFormatAnthropic
 )
 
-// rejectIfCyberSessionBlocked checks the session-block table BEFORE account
-// selection. Returns true when the request was rejected (response already
-// written + ops entry enqueued). Fail-open: disabled switch / empty key /
-// store error → false.
-func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKey *service.APIKey, body []byte, model string, format cyberSessionBlockFormat) bool {
-	if h == nil || h.gatewayService == nil || apiKey == nil {
-		return false
+type cyberSessionBlockAction int
+
+const (
+	cyberSessionBlockAllowed cyberSessionBlockAction = iota
+	cyberSessionBlockRejected
+	cyberSessionBlockReset
+)
+
+// checkCyberSessionBlock checks the session-block table before account
+// selection. Shield groups return cyberSessionBlockReset so callers can clear
+// both body identifiers and already-derived scheduling state. Other groups are
+// rejected with the endpoint-specific response envelope. Disabled switch,
+// empty key, unavailable store and lookup errors all fail open.
+func (h *OpenAIGatewayHandler) checkCyberSessionBlock(c *gin.Context, apiKey *service.APIKey, body []byte, model string, format cyberSessionBlockFormat) (cyberSessionBlockAction, string) {
+	if h == nil || h.gatewayService == nil || c == nil || c.Request == nil || apiKey == nil {
+		return cyberSessionBlockAllowed, ""
 	}
 	// 开关默认关：先走 ~ns 级缓存开关检查，再付出 key 派生(gjson+sha256)成本。
 	if enabled, _ := h.gatewayService.CyberSessionBlockRuntime(c.Request.Context()); !enabled {
-		return false
+		return cyberSessionBlockAllowed, ""
 	}
 	key := service.CyberSessionBlockKey(apiKey.ID, c, body)
 	if key == "" {
-		return false
+		return cyberSessionBlockAllowed, ""
 	}
 	if !h.gatewayService.IsCyberSessionBlocked(c.Request.Context(), key) {
-		return false
+		return cyberSessionBlockAllowed, key
 	}
 
-	// Shield 分组：cyber 封禁不拒绝用户 —— 剥掉 session 标识当新会话发。
-	// 用户继续对话, 上游看到全新 session, 不浪费重试时间。
+	// Shield 分组：调用方会剥掉 body 会话字段并清空已派生的调度状态。
+	// 此处只清理 header；成功 reset 由调用方记录普通 info 日志，避免污染错误看板。
 	if g := apiKey.Group; g != nil && g.ShieldEnabled {
 		stripOpenAISessionIdentifiers(c)
-		service.MarkOpsStreamError(c, "cyber_bypass", "shield: session reset after cyber block", 0)
-		return false // 放行: 剥掉 session 后走正常 failover 选新账号
+		return cyberSessionBlockReset, key
 	}
 	// body-signal compact 心跳可能已把响应头提交为 200（cyber 检查在用户槽位
 	// 长等待之后执行）：以 response.failed 终止事件回传；未提交时停拍后照常
@@ -3228,7 +3332,7 @@ func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKe
 		service.MarkOpsStreamError(c, "permission_error", cyberSessionBlockedClientMsg, http.StatusForbidden)
 		if writeResponsesFailedSSE(c, "permission_error", cyberSessionBlockedClientMsg) {
 			h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, key)
-			return true
+			return cyberSessionBlockRejected, key
 		}
 	}
 	switch format {
@@ -3245,7 +3349,7 @@ func (h *OpenAIGatewayHandler) rejectIfCyberSessionBlocked(c *gin.Context, apiKe
 		}})
 	}
 	h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, key)
-	return true
+	return cyberSessionBlockRejected, key
 }
 
 // enqueueCyberSessionBlockedOpsEntry captures request meta and enqueues the
@@ -3450,19 +3554,97 @@ func summarizeWSCloseErrorForLog(err error) (string, string) {
 	return closeStatus, closeReason
 }
 
-
-// stripOpenAISessionIdentifiers 移除请求中的 OpenAI 会话粘性标识,
-// 让网关把该请求视为全新会话(选新账号, 无 cyber 封禁缓存)。
+// stripOpenAISessionIdentifiers removes every header used by OpenAI sticky
+// scheduling. Body fields are handled separately so callers can also replace
+// their local body copies before failover/replay.
 func stripOpenAISessionIdentifiers(c *gin.Context) {
-	if c == nil {
+	if c == nil || c.Request == nil {
 		return
 	}
-	// header 层
-	c.Request.Header.Del("session_id")
-	c.Request.Header.Del("X-Session-Id")
-	c.Request.Header.Del("conversation_id")
-	c.Request.Header.Del("X-Conversation-Id")
-	// body 层的 prompt_cache_key 由 shield transform 层在 Do() 前剥离;
-	// 这里只处理 header 层, body 标识在 shieldTransformBody 的 AGENTS-strip
-	// 阶段一并处理(已覆盖 prompt_cache_key 剥离)。
+	for _, header := range []string{
+		"session_id",
+		"conversation_id",
+		"X-Session-Affinity",
+		"X-Session-Id",
+		"X-OpenCode-Session",
+		"X-Conversation-ID",
+		"X-Grok-Conv-Id",
+		"X-Codex-Turn-State",
+		"X-Codex-Turn-Metadata",
+		"Session-Id",
+		"Thread-Id",
+		"X-Codex-Window-Id",
+	} {
+		c.Request.Header.Del(header)
+	}
+}
+
+// stripOpenAISessionIdentifiersFromBody removes only session-scoped fields and
+// preserves all unrelated request properties. metadata.user_id participates in
+// Messages sticky routing, so it must be cleared during an explicit reset too.
+func stripOpenAISessionIdentifiersFromBody(body []byte) ([]byte, bool) {
+	if len(body) == 0 {
+		return body, false
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body, false
+	}
+
+	changed := false
+	for _, field := range []string{"prompt_cache_key", "previous_response_id", "session_id", "conversation_id"} {
+		if _, ok := payload[field]; ok {
+			delete(payload, field)
+			changed = true
+		}
+	}
+	if rawMetadata, ok := payload["metadata"]; ok {
+		var metadata map[string]json.RawMessage
+		if json.Unmarshal(rawMetadata, &metadata) == nil {
+			if _, exists := metadata["user_id"]; exists {
+				delete(metadata, "user_id")
+				changed = true
+				if len(metadata) == 0 {
+					delete(payload, "metadata")
+				} else if encoded, err := json.Marshal(metadata); err == nil {
+					payload["metadata"] = encoded
+				}
+			}
+		}
+	}
+	if rawClientMetadata, ok := payload["client_metadata"]; ok {
+		var clientMetadata map[string]json.RawMessage
+		if json.Unmarshal(rawClientMetadata, &clientMetadata) == nil {
+			clientMetadataChanged := false
+			for _, field := range []string{
+				"session_id",
+				"conversation_id",
+				"thread_id",
+				"turn_id",
+				"window_id",
+				"x-codex-turn-metadata",
+			} {
+				if _, exists := clientMetadata[field]; exists {
+					delete(clientMetadata, field)
+					clientMetadataChanged = true
+				}
+			}
+			if clientMetadataChanged {
+				changed = true
+				if len(clientMetadata) == 0 {
+					delete(payload, "client_metadata")
+				} else if encoded, err := json.Marshal(clientMetadata); err == nil {
+					payload["client_metadata"] = encoded
+				}
+			}
+		}
+	}
+	if !changed {
+		return body, false
+	}
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body, false
+	}
+	return out, true
 }

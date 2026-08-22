@@ -8,6 +8,7 @@ import (
 	"github.com/Wei-Shaw/sub2api/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/require"
+	"github.com/tidwall/gjson"
 )
 
 // newTestGinContext builds a bare gin.Context backed by an httptest recorder.
@@ -127,16 +128,66 @@ func TestBuildCyberSessionBlockedOpsEntry(t *testing.T) {
 // TestRejectIfCyberSessionBlocked_FailOpen verifies fail-open paths: nil handler
 // services, no explicit session signal, and (implicitly) disabled switch all
 // pass the request through.
-func TestRejectIfCyberSessionBlocked_FailOpen(t *testing.T) {
+func TestCheckCyberSessionBlock_FailOpen(t *testing.T) {
 	c := newTestGinContext()
 	c.Request = httptest.NewRequest("POST", "/openai/v1/responses", strings.NewReader(`{}`))
 
 	h := &OpenAIGatewayHandler{}
-	require.False(t, h.rejectIfCyberSessionBlocked(c, nil, []byte(`{}`), "gpt-5", cyberBlockFormatResponses), "nil apiKey → pass")
+	action, keyValue := h.checkCyberSessionBlock(c, nil, []byte(`{}`), "gpt-5", cyberBlockFormatResponses)
+	require.Equal(t, cyberSessionBlockAllowed, action, "nil apiKey → pass")
+	require.Empty(t, keyValue)
 
 	h2 := &OpenAIGatewayHandler{gatewayService: nil}
 	key := &service.APIKey{ID: 1}
-	require.False(t, h2.rejectIfCyberSessionBlocked(c, key, []byte(`{}`), "gpt-5", cyberBlockFormatResponses), "nil gateway service → pass")
+	action, keyValue = h2.checkCyberSessionBlock(c, key, []byte(`{}`), "gpt-5", cyberBlockFormatResponses)
+	require.Equal(t, cyberSessionBlockAllowed, action, "nil gateway service → pass")
+	require.Empty(t, keyValue)
+
+	h3 := &OpenAIGatewayHandler{gatewayService: &service.OpenAIGatewayService{}}
+	action, keyValue = h3.checkCyberSessionBlock(nil, key, []byte(`{}`), "gpt-5", cyberBlockFormatResponses)
+	require.Equal(t, cyberSessionBlockAllowed, action, "nil context → pass")
+	require.Empty(t, keyValue)
+}
+
+func TestStripOpenAISessionIdentifiers_RemovesAllSchedulingSignals(t *testing.T) {
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest("POST", "/openai/v1/responses", strings.NewReader(`{}`))
+	for _, header := range []string{
+		"session_id", "conversation_id", "X-Session-Affinity", "X-Session-Id",
+		"X-OpenCode-Session", "X-Conversation-ID", "X-Grok-Conv-Id",
+		"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "Session-Id", "Thread-Id", "X-Codex-Window-Id",
+	} {
+		c.Request.Header.Set(header, "sticky")
+	}
+
+	stripOpenAISessionIdentifiers(c)
+
+	for _, header := range []string{
+		"session_id", "conversation_id", "X-Session-Affinity", "X-Session-Id",
+		"X-OpenCode-Session", "X-Conversation-ID", "X-Grok-Conv-Id",
+		"X-Codex-Turn-State", "X-Codex-Turn-Metadata", "Session-Id", "Thread-Id", "X-Codex-Window-Id",
+	} {
+		require.Empty(t, c.Request.Header.Get(header), header)
+	}
+}
+
+func TestStripOpenAISessionIdentifiersFromBody_PreservesUnrelatedMetadata(t *testing.T) {
+	body := []byte(`{"model":"gpt-5","prompt_cache_key":"old","previous_response_id":"resp_old","metadata":{"user_id":"sticky","trace":"keep"},"client_metadata":{"session_id":"body-session","thread_id":"thread","turn_id":"turn","window_id":"window","x-codex-turn-metadata":"old","installation_id":"keep-install"},"input":"hello"}`)
+
+	out, changed := stripOpenAISessionIdentifiersFromBody(body)
+
+	require.True(t, changed)
+	require.False(t, gjson.GetBytes(out, "prompt_cache_key").Exists())
+	require.False(t, gjson.GetBytes(out, "previous_response_id").Exists())
+	require.False(t, gjson.GetBytes(out, "metadata.user_id").Exists())
+	require.Equal(t, "keep", gjson.GetBytes(out, "metadata.trace").String())
+	require.False(t, gjson.GetBytes(out, "client_metadata.session_id").Exists())
+	require.False(t, gjson.GetBytes(out, "client_metadata.thread_id").Exists())
+	require.False(t, gjson.GetBytes(out, "client_metadata.turn_id").Exists())
+	require.False(t, gjson.GetBytes(out, "client_metadata.window_id").Exists())
+	require.False(t, gjson.GetBytes(out, "client_metadata.x-codex-turn-metadata").Exists())
+	require.Equal(t, "keep-install", gjson.GetBytes(out, "client_metadata.installation_id").String())
+	require.Equal(t, "hello", gjson.GetBytes(out, "input").String())
 }
 
 // TestRecordCyberPolicyIfMarked_BlockKeyPlumbed verifies the 6th param is

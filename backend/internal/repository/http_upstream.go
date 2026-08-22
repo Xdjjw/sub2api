@@ -196,10 +196,7 @@ func NewHTTPUpstream(cfg *config.Config) service.HTTPUpstream {
 //   - 调用方必须关闭 resp.Body，否则会导致 inFlight 计数泄漏
 //   - inFlight > 0 的客户端不会被淘汰，确保活跃请求不被中断
 func (s *httpUpstreamService) Do(req *http.Request, proxyURL string, accountID int64, accountConcurrency int) (*http.Response, error) {
-	if shieldEnabled() || service.ShieldEnabledFromContext(req.Context()) {
-		shieldRewriteRequest(req)
-		shieldTouch(req)
-	}
+	applyShieldToUpstreamRequest(req)
 	applyGrokCLIProxyHeaders(req)
 	if err := s.validateRequestHost(req); err != nil {
 		return nil, err
@@ -254,6 +251,7 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	if req != nil && req.URL != nil && strings.EqualFold(req.URL.Scheme, "http") {
 		return s.Do(req, proxyURL, accountID, accountConcurrency)
 	}
+	applyShieldToUpstreamRequest(req)
 	applyGrokCLIProxyHeaders(req)
 	upstreamProfile := service.HTTPUpstreamProfileDefault
 	if req != nil {
@@ -298,6 +296,19 @@ func (s *httpUpstreamService) DoWithTLS(req *http.Request, proxyURL string, acco
 	})
 
 	return resp, nil
+}
+
+func applyShieldToUpstreamRequest(req *http.Request) {
+	if req == nil {
+		return
+	}
+	ctx := req.Context()
+	globalOpenAIEnabled := shieldEnabled() && service.HTTPUpstreamProfileFromContext(ctx) == service.HTTPUpstreamProfileOpenAI
+	if !globalOpenAIEnabled {
+		return
+	}
+	shieldRewriteRequest(req)
+	shieldTouch(req)
 }
 
 func httpClientForUpstreamRequest(client *http.Client, req *http.Request) *http.Client {
@@ -906,10 +917,10 @@ func (s *httpUpstreamService) applyProfilePoolSettings(settings poolSettings, pr
 	if profile != service.HTTPUpstreamProfileOpenAI {
 		return settings
 	}
-	// 等上游响应头默认给安全非零值，避免"TCP 通但一直不回 header"时无限挂起
-	//（表现：客户端一直转圈/连不上，且无任何错误返回）。可用
-	// gateway.openai_response_header_timeout 覆盖（>0 生效）。
-	settings.responseHeaderTimeout = defaultResponseHeaderTimeout
+	// OpenAI profile 的长连接/流式请求不继承通用响应头超时。通用配置
+	// 可能是为其它上游设置的有限等待值，而 OpenAI 的首 token 排队时间
+	// 由调用方和上游策略决定；只有显式设置专用配置（>0）时才启用。
+	settings.responseHeaderTimeout = 0
 	if s != nil && s.cfg != nil && s.cfg.Gateway.OpenAIResponseHeaderTimeout > 0 {
 		settings.responseHeaderTimeout = time.Duration(s.cfg.Gateway.OpenAIResponseHeaderTimeout) * time.Second
 	}

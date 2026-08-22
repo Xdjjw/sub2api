@@ -51,7 +51,7 @@ func (Group) Fields() []ent.Field {
 		field.Bool("peak_rate_enabled").
 			Default(false).
 			Comment("是否启用高峰时段倍率"),
-		// 是否启用破限(shield)变换：剔除 AGENTS 指令副本/历史瘦身/注入输出纪律锚点
+		// 是否启用 Shield：按协议注入输出纪律；命中已封禁 cyber session 时重置会话标识
 		field.Bool("shield_enabled").
 			Default(false).
 			Comment("是否启用破限(shield)请求变换"),
