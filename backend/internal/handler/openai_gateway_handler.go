@@ -539,6 +539,13 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 			zap.Int("pruned_turns", pruneResult.PrunedTurns),
 		)
 	}
+	guardianAffinityBody := sessionHashBody
+	if cyberSessionReset {
+		guardianAffinityBody = body
+	}
+	c.Request = c.Request.WithContext(service.WithOpenAIGuardianParentAffinity(
+		c.Request.Context(), c, guardianAffinityBody, reqModel,
+	))
 
 	// A reset request deliberately skips sticky routing. Re-hashing the remaining
 	// content would commonly select the same account again and defeat the reset.
@@ -2122,6 +2129,7 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	if cyberSessionReset {
 		wsInternalSessionHashOverride = sessionHash
 	}
+	ctx = service.WithOpenAIGuardianParentAffinity(ctx, c, firstMessage, reqModel)
 	maxAccountSwitches := h.maxAccountSwitches
 	switchCount := 0
 	profitVetoCount := 0
