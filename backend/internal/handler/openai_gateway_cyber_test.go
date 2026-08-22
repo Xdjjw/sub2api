@@ -190,6 +190,75 @@ func TestStripOpenAISessionIdentifiersFromBody_PreservesUnrelatedMetadata(t *tes
 	require.Equal(t, "hello", gjson.GetBytes(out, "input").String())
 }
 
+func TestBindShieldRecoverySession_BindsHeadersAndResponsesBody(t *testing.T) {
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest("POST", "/openai/v1/responses", strings.NewReader(`{}`))
+	body := []byte(`{"model":"gpt-5","prompt_cache_key":"old","input":[{"role":"user","content":"replacement"}],"metadata":{"trace":"keep"}}`)
+
+	out := bindShieldRecoverySession(c, body, " shield-recovery-abc ", cyberBlockFormatResponses)
+
+	require.Equal(t, "shield-recovery-abc", c.Request.Header.Get("session_id"))
+	require.Equal(t, "shield-recovery-abc", c.Request.Header.Get("conversation_id"))
+	require.Equal(t, "shield-recovery-abc", gjson.GetBytes(out, "prompt_cache_key").String())
+	require.Equal(t, "replacement", gjson.GetBytes(out, "input.0.content").String())
+	require.Equal(t, "keep", gjson.GetBytes(out, "metadata.trace").String())
+}
+
+func TestBindShieldRecoverySession_BindsWebSocketEnvelope(t *testing.T) {
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest("GET", "/openai/v1/responses", nil)
+	body := []byte(`{"type":"response.create","event_id":"evt_keep","response":{"model":"gpt-5","prompt_cache_key":"old","input":[{"role":"user","content":"replacement"}]}}`)
+
+	out := bindShieldRecoverySession(c, body, "shield-recovery-ws", cyberBlockFormatResponses)
+
+	require.Equal(t, "shield-recovery-ws", gjson.GetBytes(out, "response.prompt_cache_key").String())
+	require.Equal(t, "evt_keep", gjson.GetBytes(out, "event_id").String())
+	require.Equal(t, "replacement", gjson.GetBytes(out, "response.input.0.content").String())
+}
+
+func TestBindShieldRecoverySession_ChatOnlyBindsHeaders(t *testing.T) {
+	c := newTestGinContext()
+	c.Request = httptest.NewRequest("POST", "/openai/v1/chat/completions", strings.NewReader(`{}`))
+	body := []byte(`{"model":"gpt-5","messages":[{"role":"user","content":"replacement"}]}`)
+
+	out := bindShieldRecoverySession(c, body, "shield-recovery-chat", cyberBlockFormatChat)
+
+	require.Equal(t, string(body), string(out))
+	require.Equal(t, "shield-recovery-chat", c.Request.Header.Get("session_id"))
+	require.Equal(t, "shield-recovery-chat", c.Request.Header.Get("conversation_id"))
+}
+
+func TestWriteCyberTurnQuarantined_OpenAIEnvelope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/openai/v1/responses", strings.NewReader(`{}`))
+
+	h := &OpenAIGatewayHandler{}
+	h.writeCyberTurnQuarantined(c, &service.APIKey{ID: 7}, "gpt-5", cyberBlockFormatResponses, "blocked-key")
+
+	require.Equal(t, 403, w.Code)
+	require.Equal(t, "permission_error", gjson.Get(w.Body.String(), "error.type").String())
+	require.Equal(t, "cyber_turn_quarantined", gjson.Get(w.Body.String(), "error.code").String())
+	require.Contains(t, gjson.Get(w.Body.String(), "error.message").String(), "重新表述")
+}
+
+func TestWriteCyberTurnQuarantined_AnthropicEnvelope(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest("POST", "/anthropic/v1/messages", strings.NewReader(`{}`))
+
+	h := &OpenAIGatewayHandler{}
+	h.writeCyberTurnQuarantined(c, &service.APIKey{ID: 8}, "claude", cyberBlockFormatAnthropic, "blocked-key")
+
+	require.Equal(t, 403, w.Code)
+	require.Equal(t, "error", gjson.Get(w.Body.String(), "type").String())
+	require.Equal(t, "permission_error", gjson.Get(w.Body.String(), "error.type").String())
+	require.False(t, gjson.Get(w.Body.String(), "error.code").Exists())
+	require.Contains(t, gjson.Get(w.Body.String(), "error.message").String(), "重新表述")
+}
+
 func TestBuildCyberSessionBlockWritePlanCombinesExplicitAndTranscriptKeys(t *testing.T) {
 	body := []byte(`{"messages":[{"role":"user","content":"setup"},{"role":"assistant","content":"ready"},{"role":"user","content":"trigger"}]}`)
 	c := newTestGinContext()

@@ -25,6 +25,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 	"go.uber.org/zap"
 )
 
@@ -514,14 +515,29 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	// Shield groups reset the outbound session; other groups keep the existing
 	// rejection behavior.
 	cyberSessionReset := false
-	cyberSessionAction, _ := h.checkCyberSessionBlock(c, apiKey, sessionHashBody, reqModel, cyberBlockFormatResponses)
+	cyberRecoverySessionID := ""
+	cyberSessionAction, cyberBlockKey := h.checkCyberSessionBlock(c, apiKey, body, reqModel, cyberBlockFormatResponses)
 	switch cyberSessionAction {
 	case cyberSessionBlockRejected:
 		return
 	case cyberSessionBlockReset:
+		var pruneResult service.CyberTurnPruneResult
+		var stop bool
+		body, pruneResult, stop = h.pruneShieldCyberTurn(c, apiKey, body, reqModel, cyberBlockFormatResponses, cyberBlockKey)
+		if stop {
+			return
+		}
 		cyberSessionReset = true
 		body, _ = stripOpenAISessionIdentifiersFromBody(body)
-		reqLog.Info("openai.shield_cyber_session_reset")
+		if pruneResult.Changed {
+			cyberRecoverySessionID = pruneResult.RecoverySessionID
+			body = bindShieldRecoverySession(c, body, cyberRecoverySessionID, cyberBlockFormatResponses)
+		}
+		previousResponseID = ""
+		reqLog.Info("openai.shield_cyber_session_reset",
+			zap.Bool("history_pruned", pruneResult.Changed),
+			zap.Int("pruned_turns", pruneResult.PrunedTurns),
+		)
 	}
 
 	// A reset request deliberately skips sticky routing. Re-hashing the remaining
@@ -529,6 +545,8 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 	sessionHash := ""
 	if !cyberSessionReset {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, sessionHashBody)
+	} else if cyberRecoverySessionID != "" {
+		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 	}
 	// Freeze the canonical outbound body only after an optional cyber reset;
 	// otherwise channel mapping would retain the pre-reset session identifiers.
@@ -695,7 +713,7 @@ func (h *OpenAIGatewayHandler) Responses(c *gin.Context) {
 		}()
 		var cyberBlockBodyHTTP []byte
 		if service.GetOpsCyberPolicy(c) != nil {
-			cyberBlockBodyHTTP = sessionHashBody
+			cyberBlockBodyHTTP = body
 		}
 		h.recordCyberPolicyIfMarked(c, apiKey, account, subscription, reqModel, err != nil, cyberBlockBodyHTTP, clientRequestedUsageFields(c, channelMapping, reqModel, ""), service.HashUsageRequestPayload(body))
 		forwardDurationMs := time.Since(forwardStart).Milliseconds()
@@ -1147,17 +1165,31 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 
 	cyberSessionKeyBody := body
 	cyberSessionReset := false
-	cyberSessionAction, _ := h.checkCyberSessionBlock(c, apiKey, cyberSessionKeyBody, reqModel, cyberBlockFormatAnthropic)
+	cyberRecoverySessionID := ""
+	cyberSessionAction, cyberBlockKey := h.checkCyberSessionBlock(c, apiKey, cyberSessionKeyBody, reqModel, cyberBlockFormatAnthropic)
 	switch cyberSessionAction {
 	case cyberSessionBlockRejected:
 		return
 	case cyberSessionBlockReset:
+		var pruneResult service.CyberTurnPruneResult
+		var stop bool
+		body, pruneResult, stop = h.pruneShieldCyberTurn(c, apiKey, body, reqModel, cyberBlockFormatAnthropic, cyberBlockKey)
+		if stop {
+			return
+		}
 		cyberSessionReset = true
 		body, _ = stripOpenAISessionIdentifiersFromBody(body)
+		if pruneResult.Changed {
+			cyberRecoverySessionID = pruneResult.RecoverySessionID
+			body = bindShieldRecoverySession(c, body, cyberRecoverySessionID, cyberBlockFormatAnthropic)
+		}
 		// The mapped-body cache was created from the pre-reset request above.
 		// Rebuild it so failover attempts cannot reintroduce the blocked session.
 		mappedBodyForMessages = newOpenAIModelMappedBodyCache(body, h.gatewayService.ReplaceModelInBody)
-		reqLog.Info("openai_messages.shield_cyber_session_reset")
+		reqLog.Info("openai_messages.shield_cyber_session_reset",
+			zap.Bool("history_pruned", pruneResult.Changed),
+			zap.Int("pruned_turns", pruneResult.PrunedTurns),
+		)
 	}
 
 	sessionHash := ""
@@ -1166,6 +1198,9 @@ func (h *OpenAIGatewayHandler) Messages(c *gin.Context) {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 		promptCacheKey = h.gatewayService.ExtractSessionID(c, body)
 		sessionHash, promptCacheKey = resolveOpenAIMessagesMetadataSession(sessionHash, promptCacheKey, reqModel, body)
+	} else if cyberRecoverySessionID != "" {
+		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
+		promptCacheKey = cyberRecoverySessionID
 	}
 
 	maxAccountSwitches := h.maxAccountSwitches
@@ -1943,29 +1978,46 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 		firstMessage, _ = service.ApplyShieldToResponsesBody(firstMessage)
 	}
 
-	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
-	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
-		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
-		return
-	}
-
 	// The first response.create frame is available here, so explicit IDs are
 	// checked directly and body-derived sessions use the coarse scope gate.
 	// Shield groups reset the first turn instead of rejecting the connection.
 	cyberSessionReset := false
+	cyberRecoverySessionID := ""
 	if cyberBlockKey := findBlockedCyberSessionKey(c.Request.Context(), h.gatewayService, apiKey.ID, c, firstMessage); cyberBlockKey != "" {
 		if apiKey.Group != nil && apiKey.Group.ShieldEnabled {
+			pruneResult := h.gatewayService.PruneBlockedCyberTurns(c.Request.Context(), apiKey.ID, firstMessage)
+			if pruneResult.AwaitingReplacement {
+				writeCyberTurnQuarantinedWSError(c.Request.Context(), wsConn)
+				closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "cyber turn quarantined; rephrase and send a new message")
+				h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, reqModel, cyberBlockKey)
+				return
+			}
+			firstMessage = pruneResult.Body
 			stripOpenAISessionIdentifiers(c)
 			firstMessage, _ = stripOpenAISessionIdentifiersFromBody(firstMessage)
+			if pruneResult.Changed {
+				cyberRecoverySessionID = pruneResult.RecoverySessionID
+				firstMessage = bindShieldRecoverySession(c, firstMessage, cyberRecoverySessionID, cyberBlockFormatResponses)
+			}
 			previousResponseID = ""
+			firstMessageToolCoverage = service.AnalyzeToolCallOutputContextCoverageBytes(firstMessage)
+			previousResponseCanMove = !firstMessageToolCoverage.HasFunctionCallOutput || firstMessageToolCoverage.ContextCoversAllCallIDs
 			cyberSessionReset = true
-			reqLog.Info("openai.websocket_shield_cyber_session_reset")
+			reqLog.Info("openai.websocket_shield_cyber_session_reset",
+				zap.Bool("history_pruned", pruneResult.Changed),
+				zap.Int("pruned_turns", pruneResult.PrunedTurns),
+			)
 		} else {
 			writeCyberSessionBlockedWSError(c.Request.Context(), wsConn)
 			closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, "session blocked by cyber-security policy")
 			h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, reqModel, cyberBlockKey)
 			return
 		}
+	}
+	imageIntent := service.IsExplicitImageGenerationIntent("/v1/responses", reqModel, firstMessage)
+	if imageIntent && !service.GroupAllowsImageGeneration(apiKey.Group) {
+		closeOpenAIClientWS(wsConn, coderws.StatusPolicyViolation, service.ImageGenerationPermissionMessage())
+		return
 	}
 	var cyberBlockedThisConn atomic.Bool
 	var cyberTurnBodiesMu sync.Mutex
@@ -2052,9 +2104,13 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 	wsFallbackSessionSeed := openAIWSIngressFallbackSessionSeed(subject.UserID, apiKey.ID, apiKey.GroupID)
 	wsInternalSessionHashOverride := ""
 	if cyberSessionReset {
-		// A per-connection seed prevents the reset from reusing either the blocked
-		// explicit affinity or the deterministic fallback used by normal WS ingress.
-		wsFallbackSessionSeed += ":shield-reset:" + uuid.NewString()
+		// A recovered history uses a stable clean epoch; legacy blocks without a
+		// stored cut plan retain a per-connection reset seed.
+		if cyberRecoverySessionID != "" {
+			wsFallbackSessionSeed += ":" + cyberRecoverySessionID
+		} else {
+			wsFallbackSessionSeed += ":shield-reset:" + uuid.NewString()
+		}
 	}
 	sessionHashBody := firstMessage
 	if cyberSessionReset {
@@ -2328,7 +2384,6 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 			BeforeRequest: func(turn int, payload []byte, originalModel string) error {
 				c.Set(securityAuditWSTurnContextKey, turn)
 				service.BeginOpsStreamTurn(c, turn)
-				setCyberTurnBody(turn, payload)
 				if turn == 1 {
 					return nil
 				}
@@ -2354,24 +2409,39 @@ func (h *OpenAIGatewayHandler) ResponsesWebSocket(c *gin.Context) {
 				return nil
 			},
 			TransformRequest: func(turn int, payload []byte) ([]byte, error) {
+				shieldEnabled := apiKey.Group != nil && apiKey.Group.ShieldEnabled
+				if shieldEnabled {
+					payload, _ = service.ApplyShieldToResponsesBody(payload)
+				}
 				if turn > 1 {
 					turnCyberKey := findBlockedCyberSessionKey(ctx, h.gatewayService, apiKey.ID, c, payload)
 					if turnCyberKey != "" {
-						if apiKey.Group == nil || !apiKey.Group.ShieldEnabled {
+						if !shieldEnabled {
 							writeCyberSessionBlockedWSError(ctx, wsConn)
 							h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, reqModel, turnCyberKey)
 							return payload, service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "session blocked by cyber-security policy", nil)
 						}
+						pruneResult := h.gatewayService.PruneBlockedCyberTurns(ctx, apiKey.ID, payload)
+						if pruneResult.AwaitingReplacement {
+							writeCyberTurnQuarantinedWSError(ctx, wsConn)
+							h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, reqModel, turnCyberKey)
+							return payload, service.NewOpenAIWSClientCloseError(coderws.StatusPolicyViolation, "cyber turn quarantined; rephrase and send a new message", nil)
+						}
+						payload = pruneResult.Body
 						stripOpenAISessionIdentifiers(c)
 						payload, _ = stripOpenAISessionIdentifiersFromBody(payload)
-						reqLog.Info("openai.websocket_turn_shield_cyber_session_reset", zap.Int("turn", turn))
+						if pruneResult.Changed {
+							payload = bindShieldRecoverySession(c, payload, pruneResult.RecoverySessionID, cyberBlockFormatResponses)
+						}
+						reqLog.Info("openai.websocket_turn_shield_cyber_session_reset",
+							zap.Int("turn", turn),
+							zap.Bool("history_pruned", pruneResult.Changed),
+							zap.Int("pruned_turns", pruneResult.PrunedTurns),
+						)
 					}
 				}
-				if apiKey.Group == nil || !apiKey.Group.ShieldEnabled {
-					return payload, nil
-				}
-				transformed, _ := service.ApplyShieldToResponsesBody(payload)
-				return transformed, nil
+				setCyberTurnBody(turn, payload)
+				return payload, nil
 			},
 			MapRequestModel: func(turn int, originalModel string) (string, error) {
 				model := strings.TrimSpace(originalModel)
@@ -3373,6 +3443,30 @@ func writeCyberSessionBlockedWSError(ctx context.Context, conn *coderws.Conn) {
 	_ = conn.Write(writeCtx, coderws.MessageText, payload)
 }
 
+func writeCyberTurnQuarantinedWSError(ctx context.Context, conn *coderws.Conn) {
+	if conn == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	payload, err := json.Marshal(gin.H{
+		"event_id": "evt_cyber_turn_quarantined",
+		"type":     "error",
+		"error": gin.H{
+			"type":    "permission_error",
+			"code":    "cyber_turn_quarantined",
+			"message": cyberTurnQuarantinedClientMsg,
+		},
+	})
+	if err != nil {
+		payload = []byte(`{"event_id":"evt_cyber_turn_quarantined","type":"error","error":{"type":"permission_error","code":"cyber_turn_quarantined","message":"The cyber_policy turn was quarantined; rephrase it in this conversation and send a new message"}}`)
+	}
+	writeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	_ = conn.Write(writeCtx, coderws.MessageText, payload)
+}
+
 // cyberPolicyRecordedKey guards against double-firing recordCyberPolicyIfMarked
 // within one request (e.g. in a retry/failover loop).
 const cyberPolicyRecordedKey = "ops_cyber_recorded"
@@ -3444,6 +3538,8 @@ func buildCyberPolicyOpsErrorEntry(meta cyberPolicyOpsErrorMeta, mark *service.C
 
 // 双语单串：网关客户端面向中英用户，且本错误无 i18n 协商通道。
 const cyberSessionBlockedClientMsg = "该会话已被网络安全策略屏蔽，请开启新会话 / This session is blocked by cyber-security policy, please start a new session"
+
+const cyberTurnQuarantinedClientMsg = "触发 cyber_policy 的对话轮已隔离，请在当前对话中重新表述后发送 / The cyber_policy turn was quarantined; rephrase it in this conversation and send a new message"
 
 // buildCyberSessionBlockedOpsEntry builds the ops_error_logs entry for a request
 // rejected locally by the cyber session block (F5a). Distinct error_type from
@@ -3556,6 +3652,59 @@ func (h *OpenAIGatewayHandler) checkCyberSessionBlock(c *gin.Context, apiKey *se
 	}
 	h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, key)
 	return cyberSessionBlockRejected, key
+}
+
+// pruneShieldCyberTurn removes the exact rejected turn from a full-history
+// continuation. An unchanged replay is rejected locally: forwarding the clean
+// prefix alone would answer a prompt the user did not send.
+func (h *OpenAIGatewayHandler) pruneShieldCyberTurn(
+	c *gin.Context,
+	apiKey *service.APIKey,
+	body []byte,
+	model string,
+	format cyberSessionBlockFormat,
+	blockKey string,
+) ([]byte, service.CyberTurnPruneResult, bool) {
+	result := service.CyberTurnPruneResult{Body: body}
+	if h == nil || h.gatewayService == nil || c == nil || c.Request == nil || apiKey == nil {
+		return body, result, false
+	}
+	result = h.gatewayService.PruneBlockedCyberTurns(c.Request.Context(), apiKey.ID, body)
+	if !result.AwaitingReplacement {
+		return result.Body, result, false
+	}
+	h.writeCyberTurnQuarantined(c, apiKey, model, format, blockKey)
+	return body, result, true
+}
+
+func (h *OpenAIGatewayHandler) writeCyberTurnQuarantined(
+	c *gin.Context,
+	apiKey *service.APIKey,
+	model string,
+	format cyberSessionBlockFormat,
+	blockKey string,
+) {
+	if service.StopOpenAICompactSSEKeepaliveCommitted(c) {
+		service.MarkOpsStreamError(c, "cyber_turn_quarantined", cyberTurnQuarantinedClientMsg, http.StatusForbidden)
+		if writeResponsesFailedSSE(c, "cyber_turn_quarantined", cyberTurnQuarantinedClientMsg) {
+			h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, blockKey)
+			return
+		}
+	}
+	switch format {
+	case cyberBlockFormatAnthropic:
+		c.JSON(http.StatusForbidden, gin.H{"type": "error", "error": gin.H{
+			"type":    "permission_error",
+			"message": cyberTurnQuarantinedClientMsg,
+		}})
+	default:
+		c.JSON(http.StatusForbidden, gin.H{"error": gin.H{
+			"type":    "permission_error",
+			"code":    "cyber_turn_quarantined",
+			"message": cyberTurnQuarantinedClientMsg,
+		}})
+	}
+	h.enqueueCyberSessionBlockedOpsEntry(c, apiKey, model, blockKey)
 }
 
 type cyberSessionBlockWritePlan struct {
@@ -3727,7 +3876,12 @@ func (h *OpenAIGatewayHandler) recordCyberPolicyIfMarked(c *gin.Context, apiKey 
 		plan := buildCyberSessionBlockWritePlan(apiKey.ID, c, cyberBlockBody)
 		if len(plan.keys) > 0 {
 			blockCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
-			gwSvc.MarkCyberSessionBlocked(blockCtx, plan.scopeKey, plan.keys)
+			gwSvc.MarkCyberSessionBlockedWithPrunePlan(
+				blockCtx,
+				plan.scopeKey,
+				plan.keys,
+				service.BuildCyberTurnPrunePlan(apiKey.ID, cyberBlockBody),
+			)
 			cancel()
 		}
 	}
@@ -3902,4 +4056,31 @@ func stripOpenAISessionIdentifiersFromBody(body []byte) ([]byte, bool) {
 		return body, false
 	}
 	return out, true
+}
+
+// bindShieldRecoverySession replaces the blocked client affinity with a
+// deterministic clean epoch. Repeated local continuations therefore keep the
+// same upstream cache/sticky identity after the rejected turn is pruned.
+func bindShieldRecoverySession(c *gin.Context, body []byte, recoverySessionID string, format cyberSessionBlockFormat) []byte {
+	recoverySessionID = strings.TrimSpace(recoverySessionID)
+	if recoverySessionID == "" {
+		return body
+	}
+	if c != nil && c.Request != nil {
+		c.Request.Header.Set("session_id", recoverySessionID)
+		c.Request.Header.Set("conversation_id", recoverySessionID)
+	}
+	if format != cyberBlockFormatResponses || !gjson.ValidBytes(body) {
+		return body
+	}
+	path := "prompt_cache_key"
+	eventType := strings.ToLower(strings.TrimSpace(gjson.GetBytes(body, "type").String()))
+	if strings.HasPrefix(eventType, "response.") && gjson.GetBytes(body, "response").IsObject() {
+		path = "response.prompt_cache_key"
+	}
+	out, err := sjson.SetBytes(body, path, recoverySessionID)
+	if err != nil {
+		return body
+	}
+	return out
 }

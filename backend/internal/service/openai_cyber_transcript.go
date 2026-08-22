@@ -12,6 +12,7 @@ import (
 
 type openAICyberTranscriptBlockKeys struct {
 	lookupKeys          []string
+	lookupItemIndexes   []int
 	preLatestUserKey    string
 	lookupKeysTruncated bool
 }
@@ -58,16 +59,19 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 			return openAICyberTranscriptBlockKeys{}
 		}
 		result := openAICyberTranscriptBlockKeys{
-			lookupKeys: make([]string, 0, maxOpenAICyberTranscriptLookupKeys),
+			lookupKeys:        make([]string, 0, maxOpenAICyberTranscriptLookupKeys),
+			lookupItemIndexes: make([]int, 0, maxOpenAICyberTranscriptLookupKeys),
 		}
 		nextLookupKey := 0
 		lookupKeysRotated := false
 		lastLookupKey := ""
+		itemIndex := -1
 		// This is an entropy heuristic, not provenance proof: authenticated
 		// server-side history would be required to distinguish fixed few-shot
 		// assistant items perfectly.
 		hasModelGeneratedItem := false
 		sequence.ForEach(func(_, item gjson.Result) bool {
+			itemIndex++
 			canonical := item.Raw
 			switch item.Type {
 			case gjson.String:
@@ -87,8 +91,10 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 			lastLookupKey = hex.EncodeToString(h.Sum(nil))
 			if len(result.lookupKeys) < maxOpenAICyberTranscriptLookupKeys {
 				result.lookupKeys = append(result.lookupKeys, lastLookupKey)
+				result.lookupItemIndexes = append(result.lookupItemIndexes, itemIndex)
 			} else {
 				result.lookupKeys[nextLookupKey] = lastLookupKey
+				result.lookupItemIndexes[nextLookupKey] = itemIndex
 				nextLookupKey = (nextLookupKey + 1) % maxOpenAICyberTranscriptLookupKeys
 				lookupKeysRotated = true
 				result.lookupKeysTruncated = true
@@ -103,6 +109,10 @@ func deriveOpenAICyberTranscriptBlockKeys(apiKeyID int64, body []byte) openAICyb
 			ordered = append(ordered, result.lookupKeys[nextLookupKey:]...)
 			ordered = append(ordered, result.lookupKeys[:nextLookupKey]...)
 			result.lookupKeys = ordered
+			orderedIndexes := make([]int, 0, len(result.lookupItemIndexes))
+			orderedIndexes = append(orderedIndexes, result.lookupItemIndexes[nextLookupKey:]...)
+			orderedIndexes = append(orderedIndexes, result.lookupItemIndexes[:nextLookupKey]...)
+			result.lookupItemIndexes = orderedIndexes
 		}
 		return result
 	}

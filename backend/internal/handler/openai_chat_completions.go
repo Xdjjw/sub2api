@@ -107,14 +107,28 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	}
 	cyberSessionKeyBody := body
 	cyberSessionReset := false
-	cyberSessionAction, _ := h.checkCyberSessionBlock(c, apiKey, cyberSessionKeyBody, reqModel, cyberBlockFormatChat)
+	cyberRecoverySessionID := ""
+	cyberSessionAction, cyberBlockKey := h.checkCyberSessionBlock(c, apiKey, cyberSessionKeyBody, reqModel, cyberBlockFormatChat)
 	switch cyberSessionAction {
 	case cyberSessionBlockRejected:
 		return
 	case cyberSessionBlockReset:
+		var pruneResult service.CyberTurnPruneResult
+		var stop bool
+		body, pruneResult, stop = h.pruneShieldCyberTurn(c, apiKey, body, reqModel, cyberBlockFormatChat, cyberBlockKey)
+		if stop {
+			return
+		}
 		cyberSessionReset = true
 		body, _ = stripOpenAISessionIdentifiersFromBody(body)
-		reqLog.Info("openai_chat_completions.shield_cyber_session_reset")
+		if pruneResult.Changed {
+			cyberRecoverySessionID = pruneResult.RecoverySessionID
+			body = bindShieldRecoverySession(c, body, cyberRecoverySessionID, cyberBlockFormatChat)
+		}
+		reqLog.Info("openai_chat_completions.shield_cyber_session_reset",
+			zap.Bool("history_pruned", pruneResult.Changed),
+			zap.Int("pruned_turns", pruneResult.PrunedTurns),
+		)
 	}
 
 	// 解析渠道级模型映射
@@ -153,6 +167,9 @@ func (h *OpenAIGatewayHandler) ChatCompletions(c *gin.Context) {
 	if !cyberSessionReset {
 		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
 		promptCacheKey = h.gatewayService.ExtractSessionID(c, body)
+	} else if cyberRecoverySessionID != "" {
+		sessionHash = h.gatewayService.GenerateSessionHash(c, body)
+		promptCacheKey = cyberRecoverySessionID
 	}
 
 	maxAccountSwitches := h.maxAccountSwitches

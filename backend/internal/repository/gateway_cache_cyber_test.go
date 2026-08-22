@@ -95,3 +95,38 @@ func TestGatewayCacheCyberBlockCommandsAreBoundedAndLookupShortCircuits(t *testi
 	require.Equal(t, keys[cyberSessionRedisCommandMaxKeys+3], matched)
 	require.Equal(t, []int{cyberSessionRedisCommandMaxKeys, cyberSessionRedisCommandMaxKeys}, hook.mgetKeyCounts)
 }
+
+func TestGatewayCacheCyberTurnPrunePlanRoundTrip(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	store, ok := NewGatewayCache(client).(service.CyberTurnPruneStore)
+	require.True(t, ok)
+
+	plan := service.CyberTurnPrunePlan{
+		Version:           1,
+		FullTranscriptKey: "full-2",
+		PreLatestUserKey:  "prefix-1",
+	}
+	ctx := context.Background()
+	require.NoError(t, store.SetCyberTurnPrunePlan(ctx, plan, time.Minute))
+	require.Greater(t, server.TTL(cyberTurnPrunePlanPrefix+plan.FullTranscriptKey), time.Duration(0))
+
+	plans, err := store.FindCyberTurnPrunePlans(ctx, []string{"missing", "full-2", "full-2"})
+	require.NoError(t, err)
+	require.Equal(t, []service.CyberTurnPrunePlan{plan}, plans)
+}
+
+func TestGatewayCacheCyberTurnPrunePlanIgnoresMalformedValues(t *testing.T) {
+	server := miniredis.RunT(t)
+	client := redis.NewClient(&redis.Options{Addr: server.Addr()})
+	t.Cleanup(func() { _ = client.Close() })
+	store, ok := NewGatewayCache(client).(service.CyberTurnPruneStore)
+	require.True(t, ok)
+
+	server.Set(cyberTurnPrunePlanPrefix+"bad", "not-json")
+	server.Set(cyberTurnPrunePlanPrefix+"mismatch", `{"version":1,"full_transcript_key":"different"}`)
+	plans, err := store.FindCyberTurnPrunePlans(context.Background(), []string{"bad", "mismatch"})
+	require.NoError(t, err)
+	require.Empty(t, plans)
+}

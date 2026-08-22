@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -225,6 +226,7 @@ func (c *gatewayCache) ReleaseGrokVideoBilled(ctx context.Context, key string) e
 
 // Compile-time assertion: gatewayCache must implement CyberSessionBlockStore.
 var _ service.CyberSessionBlockStore = (*gatewayCache)(nil)
+var _ service.CyberTurnPruneStore = (*gatewayCache)(nil)
 var _ service.LiveCallStore = (*gatewayCache)(nil)
 
 const reasoningContentPrefix = "reasoning_content:"
@@ -272,6 +274,7 @@ func (c *gatewayCache) GetReasoningContent(ctx context.Context, itemID string) (
 const (
 	cyberSessionBlockPrefix         = "cyber_session_block:"
 	cyberSessionScopePrefix         = "cyber_session_scope:"
+	cyberTurnPrunePlanPrefix        = "cyber_turn_prune_plan:"
 	cyberSessionRedisCommandMaxKeys = 128
 )
 
@@ -347,6 +350,76 @@ func (c *gatewayCache) FindCyberSessionBlocked(ctx context.Context, keys []strin
 		}
 	}
 	return "", nil
+}
+
+// SetCyberTurnPrunePlan stores the rejected turn boundary under its exact full
+// transcript hash. A later full-history request only matches while that exact
+// rejected prefix is still present, so rewritten/replaced turns do not inherit
+// an unrelated prune operation.
+func (c *gatewayCache) SetCyberTurnPrunePlan(ctx context.Context, plan service.CyberTurnPrunePlan, ttl time.Duration) error {
+	if c == nil || c.rdb == nil {
+		return errors.New("gateway cache unavailable")
+	}
+	if strings.TrimSpace(plan.FullTranscriptKey) == "" {
+		return nil
+	}
+	encoded, err := json.Marshal(plan)
+	if err != nil {
+		return err
+	}
+	return c.rdb.Set(ctx, cyberTurnPrunePlanPrefix+plan.FullTranscriptKey, encoded, ttl).Err()
+}
+
+// FindCyberTurnPrunePlans returns distinct plans in transcript order. Redis
+// work remains bounded with the same batch size used by session-block lookup.
+func (c *gatewayCache) FindCyberTurnPrunePlans(ctx context.Context, transcriptKeys []string) ([]service.CyberTurnPrunePlan, error) {
+	if c == nil || c.rdb == nil {
+		return nil, errors.New("gateway cache unavailable")
+	}
+	if len(transcriptKeys) == 0 {
+		return nil, nil
+	}
+	plans := make([]service.CyberTurnPrunePlan, 0, 2)
+	seen := make(map[string]struct{}, 2)
+	for start := 0; start < len(transcriptKeys); start += cyberSessionRedisCommandMaxKeys {
+		end := start + cyberSessionRedisCommandMaxKeys
+		if end > len(transcriptKeys) {
+			end = len(transcriptKeys)
+		}
+		redisKeys := make([]string, end-start)
+		for i, key := range transcriptKeys[start:end] {
+			redisKeys[i] = cyberTurnPrunePlanPrefix + key
+		}
+		values, err := c.rdb.MGet(ctx, redisKeys...).Result()
+		if err != nil {
+			return nil, err
+		}
+		for valueIndex, value := range values {
+			if value == nil {
+				continue
+			}
+			var raw []byte
+			switch typed := value.(type) {
+			case string:
+				raw = []byte(typed)
+			case []byte:
+				raw = typed
+			default:
+				continue
+			}
+			var plan service.CyberTurnPrunePlan
+			lookupKey := transcriptKeys[start+valueIndex]
+			if json.Unmarshal(raw, &plan) != nil || strings.TrimSpace(plan.FullTranscriptKey) == "" || plan.FullTranscriptKey != lookupKey {
+				continue
+			}
+			if _, exists := seen[plan.FullTranscriptKey]; exists {
+				continue
+			}
+			seen[plan.FullTranscriptKey] = struct{}{}
+			plans = append(plans, plan)
+		}
+	}
+	return plans, nil
 }
 
 var claimLiveControllerScript = redis.NewScript(`
